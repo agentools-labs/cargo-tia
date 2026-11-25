@@ -170,10 +170,10 @@ fn parse(args: Vec<OsString>) -> Result<Parsed, String> {
             "--package" | "--workspace" | "--all" | "--exclude" | "--manifest-path"
         ) || short_selection_flag(&arg);
         // Nextest's build reuse fixes the packages and conflicts with `--workspace`.
-        // A recorded rerun (`-R`, `--rerun`) has its own scope too.
+        // A recorded rerun (`-R`, `--rerun`, alias `--run-id`) has its own scope too.
         let reuses = matches!(
             flag,
-            "--archive-file" | "--binaries-metadata" | "--cargo-metadata" | "--rerun"
+            "--archive-file" | "--binaries-metadata" | "--cargo-metadata" | "--rerun" | "--run-id"
         ) || short_flag(&arg, &['R']);
         if reuses {
             return Err(format!(
@@ -831,6 +831,8 @@ mod tests {
             &["nextest", "--", "--cargo-metadata", "cached.json"],
             &["nextest", "--", "-R", "latest"],
             &["nextest", "--", "--rerun=latest"],
+            &["nextest", "--", "--run-id", "latest"],
+            &["nextest", "--", "--run-id=latest"],
             &["test", "list"],
             &["--bogus"],
         ] {

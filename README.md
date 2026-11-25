@@ -70,9 +70,10 @@ the run. `args` separates arguments with spaces, so for a manifest path that hol
 `cargo_args` array of `cargo tia list --json` instead.
 
 Arguments after `--` go to the test command. They must not change the packages: the tool rejects
-`-p` and `-m` (also in a group such as `-qp`), `--package`, `--workspace`, `--exclude` and
-`--manifest-path` there, and nextest's build-reuse options `--archive-file` and
-`--binaries-metadata`, which conflict with `--workspace`. A configuration option there (Cargo's `--config`, nextest's `--config-file` or
+`-p` and `-m` (also in a group such as `-qp`), `--package`, `--workspace`, `--all`, `--exclude` and
+`--manifest-path` there. It also rejects nextest's build-reuse options `--archive-file`,
+`--binaries-metadata` and `--cargo-metadata`, which conflict with `--workspace`, and the recorded
+rerun options `-R`, `--rerun` and `--run-id`, which have their own scope. A configuration option there (Cargo's `--config`, nextest's `--config-file` or
 `--tool-config-file`) can change every package, so it selects the full workspace. Cargo's `--config`
 values also go to `cargo metadata`, because Cargo can need them to read the manifests. A custom target
 specification file (`--target spec.json`) there counts as a full-run file. For a partial selection
@@ -158,7 +159,9 @@ because a case-insensitive file system reads them so.
   of a path dependency. Git cannot see changes there.
 - A non-member path dependency that inherits dependencies from a workspace manifest that the tool
   cannot find.
-- A sparse checkout that leaves out tracked files: Cargo cannot see the tests in them.
+- A sparse checkout that leaves out tracked files: Cargo cannot see the tests in them. When it leaves
+  out a member or a manifest that Cargo needs, `cargo metadata` fails first, and the tool exits with
+  2 and Cargo's error.
 - With `--committed`: any difference between the working tree and `HEAD` (tracked, untracked or hidden
   files). The tool reads the workspace, its configuration and links from the working tree.
 

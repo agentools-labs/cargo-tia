@@ -191,6 +191,24 @@ pub fn classify(workspace: &Workspace, rules: &Rules, path: &str) -> Effect {
 /// Selects the changed packages and every package that depends on them, directly or not.
 /// Any file that is a full-run file or lies outside every package selects the full workspace.
 ///
+/// The part of `path` below `target`, by whole path segments and without regard to case (a
+/// case-insensitive file system reaches a target under any spelling, accented letters
+/// included): empty for the target itself, `/rest` below it, `None` elsewhere.
+fn below(path: &str, target: &str) -> Option<String> {
+    let count = target.split('/').count();
+    let mut parts = path.splitn(count + 1, '/');
+    for wanted in target.split('/') {
+        if parts.next()?.to_lowercase() != wanted.to_lowercase() {
+            return None;
+        }
+    }
+    Some(
+        parts
+            .next()
+            .map_or(String::new(), |rest| format!("/{rest}")),
+    )
+}
+
 /// `symlinks` holds tracked symbolic links as (link, target). A changed file below a target
 /// also counts as changed at the link, because the package that holds the link reads it.
 /// `special` holds changed paths that are or were a symbolic link or a submodule: their
@@ -222,16 +240,9 @@ pub fn select(
                 {
                     link.clone()
                 } else {
-                    // Without regard to case: on a case-insensitive file system a link reaches
-                    // its target under any spelling.
-                    let lower = path.to_ascii_lowercase();
-                    if !lower.starts_with(&target.to_ascii_lowercase()) {
+                    let Some(rest) = below(path, target) else {
                         continue;
-                    }
-                    let rest = &path[target.len()..];
-                    if !(rest.is_empty() || rest.starts_with('/')) {
-                        continue;
-                    }
+                    };
                     format!("{link}{rest}")
                 };
                 let new = !reached.iter().any(|(known, _)| *known == via);
@@ -590,6 +601,37 @@ mod tests {
             .files
             .iter()
             .any(|f| f.path == "crates/app/src/shared.rs"));
+        // Accented letters too, also below a linked directory.
+        let links = [
+            (
+                "crates/app/src/data.json".to_string(),
+                "tools/tool/état.json".to_string(),
+            ),
+            (
+                "crates/mid/data".to_string(),
+                "tools/tool/Données".to_string(),
+            ),
+        ];
+        let selection = select(
+            &ws,
+            &Rules::default(),
+            &files(&["tools/tool/État.json", "tools/tool/DONNÉES/a.json"]),
+            &links,
+            &[],
+        );
+        let reached: Vec<&str> = selection.files.iter().map(|f| f.path.as_str()).collect();
+        assert!(reached.contains(&"crates/app/src/data.json"), "{reached:?}");
+        assert!(reached.contains(&"crates/mid/data/a.json"), "{reached:?}");
+        assert_eq!(below("a/bc", "a/b"), None);
+        assert_eq!(below("a/b", "a/b/c"), None);
+        assert_eq!(below("A/B/c/d", "a/b").as_deref(), Some("/c/d"));
+        let links = [
+            (
+                "crates/app/src/shared.rs".to_string(),
+                "tools/tool/src/shared.rs".to_string(),
+            ),
+            ("crates/mid/data".to_string(), "fixtures".to_string()),
+        ];
         // A prefix that is not a whole path segment does not reach through the link.
         let selection = select(
             &ws,
