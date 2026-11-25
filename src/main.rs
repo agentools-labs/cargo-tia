@@ -259,6 +259,10 @@ fn main() -> ExitCode {
                         selection.make_full(&workspace, reason);
                     }
                 }
+                for dir in &workspace.unresolved {
+                    let reason = format!("cannot find the workspace that `{dir}` inherits from");
+                    selection.make_full(&workspace, reason);
+                }
                 if config_override(&options) {
                     let reason = "`--config` after `--` can change the build".to_string();
                     selection.make_full(&workspace, reason);

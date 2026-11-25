@@ -37,6 +37,8 @@ pub struct Workspace {
     pub source_dirs: Vec<String>,
     /// Cargo configuration files that other configuration files include.
     pub config_files: Vec<String>,
+    /// Non-member path dependencies whose inherited dependencies cannot be found.
+    pub unresolved: Vec<String>,
     /// Build scripts of the members, relative to the workspace root.
     pub build_scripts: Vec<String>,
     /// Target source files of the members, with the index of the member that declares each.
@@ -189,8 +191,29 @@ fn follow_path_dependencies(workspace: &mut Workspace) {
             let script = relative(&root, &normalize(&base.join(script)));
             workspace.build_scripts.push(script);
         }
-        for path in key_values(&text, "path") {
-            let target = normalize(&base.join(path));
+        let mut paths: Vec<PathBuf> = key_values(&text, "path")
+            .into_iter()
+            .map(|path| base.join(path))
+            .collect();
+        // `workspace = true` takes a dependency from the crate's workspace manifest.
+        if inherits(&text) && !is_workspace_root(&text) {
+            let manifest = base.ancestors().skip(1).find_map(|dir| {
+                let text = std::fs::read_to_string(dir.join("Cargo.toml")).ok()?;
+                is_workspace_root(&text).then(|| (dir.to_path_buf(), text))
+            });
+            match manifest {
+                Some((dir, text)) => {
+                    paths.extend(
+                        key_values(&text, "path")
+                            .into_iter()
+                            .map(|path| dir.join(path)),
+                    );
+                }
+                None => workspace.unresolved.push(dir.clone()),
+            }
+        }
+        for path in paths {
+            let target = normalize(&path);
             if !target.is_dir() {
                 // A target path such as `src/lib.rs`: only its location matters.
                 workspace.foreign_files.push(relative(&root, &target));
@@ -219,6 +242,24 @@ fn follow_path_dependencies(workspace: &mut Workspace) {
     workspace.foreign = found.into_iter().collect();
     workspace.build_scripts.sort();
     workspace.build_scripts.dedup();
+}
+
+/// True when a manifest inherits a value from its workspace (`workspace = true`).
+fn inherits(text: &str) -> bool {
+    text.lines().any(|line| {
+        let line: String = line
+            .split('#')
+            .next()
+            .unwrap_or_default()
+            .split_whitespace()
+            .collect();
+        line.contains("workspace=true")
+    })
+}
+
+/// True when a manifest has a `[workspace]` table.
+fn is_workspace_root(text: &str) -> bool {
+    text.lines().any(|line| line.trim() == "[workspace]")
 }
 
 /// What the workspace manifest and Cargo configuration redirect to local directories.
@@ -274,7 +315,13 @@ fn overrides(workspace: &Workspace) -> Overrides {
             for include in key_strings(&text, "include") {
                 let included = normalize(&dir.join(include));
                 includes.push(relative(root, &included));
-                files.push((included, base.clone()));
+                // Relative paths in a configuration file start from the parent of its directory.
+                let included_base = included
+                    .parent()
+                    .and_then(Path::parent)
+                    .unwrap_or(root)
+                    .to_path_buf();
+                files.push((included, included_base));
             }
             for key in ["directory", "local-registry"] {
                 for source in key_strings(&text, key) {
@@ -729,6 +776,17 @@ mod tests {
             ["../c", "../d"]
         );
         assert!(override_paths("# paths = [\"../e\"]\nsearch-paths = 1").is_empty());
+    }
+
+    #[test]
+    fn finds_inherited_values() {
+        assert!(inherits("[dependencies]\nfoo.workspace = true"));
+        assert!(inherits("foo = { workspace = true, features = [\"x\"] }"));
+        assert!(!inherits("# foo.workspace = true\nbar = \"1\""));
+        assert!(is_workspace_root(
+            "[package]\nname = \"x\"\n\n[workspace]\n"
+        ));
+        assert!(!is_workspace_root("[workspace.dependencies]\n"));
     }
 
     #[test]

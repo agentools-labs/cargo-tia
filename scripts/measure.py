@@ -70,6 +70,12 @@ def main():
     commits = run(
         ["git", "rev-list", "--first-parent", "-n", str(select_count), start_ref], repo
     ).stdout.split()
+    # A commit without a parent (the root, or the end of a shallow clone) has nothing to compare.
+    commits = [
+        commit for commit in commits
+        if run(["git", "rev-parse", "--verify", "-q", f"{commit}^1"], repo, check=False).returncode == 0
+    ]
+    print(f"measuring {len(commits)} commits", file=sys.stderr)
     rows = []
     try:
         for index, commit in enumerate(commits):

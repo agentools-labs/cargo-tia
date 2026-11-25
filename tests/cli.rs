@@ -141,9 +141,14 @@ impl Drop for Repo {
     }
 }
 
-/// Keeps the user's git configuration out of the tests.
+/// Keeps the user's git and Cargo configuration out of the tests.
 fn isolated(mut command: Command) -> Command {
+    let cargo_home = std::env::temp_dir()
+        .join("cargo-tia-tests")
+        .join("cargo-home");
+    let _ = fs::create_dir_all(&cargo_home);
     command
+        .env("CARGO_HOME", cargo_home)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_AUTHOR_NAME", "test")
@@ -1546,6 +1551,60 @@ fn executable_bit_changes_count_even_when_git_ignores_them() {
     )
     .unwrap();
     assert_eq!(selected(&repo.select("HEAD", &[])), ["lonely"]);
+}
+
+#[test]
+fn inherited_path_dependency_outside_the_repository_selects_the_whole_workspace() {
+    let outside = Repo::new("outside-inherited");
+    vendor_crate(&outside, "outer", &[]);
+    let repo = chain();
+    repo.append("Cargo.toml", "exclude = [\"other\"]\n");
+    // `other` is a second workspace; its member `shim` inherits `outer` from it.
+    repo.write(
+        "other/Cargo.toml",
+        &format!(
+            "[workspace]\nmembers = [\"shim\"]\n\n[workspace.dependencies]\nouter = {{ path = {:?} }}\n",
+            outside.path("outer").display().to_string()
+        ),
+    );
+    repo.write(
+        "other/shim/Cargo.toml",
+        "[package]\nname = \"shim\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nouter.workspace = true\n",
+    );
+    repo.write("other/shim/src/lib.rs", "pub fn s() {}\n");
+    let manifest = fs::read_to_string(repo.path("crates/lonely/Cargo.toml")).unwrap();
+    repo.write(
+        "crates/lonely/Cargo.toml",
+        &manifest.replace(
+            "[dependencies]\n",
+            "[dependencies]\nshim = { path = \"../../other/shim\" }\n",
+        ),
+    );
+    repo.commit("inherited dependency");
+    let json = repo.select("HEAD", &[]);
+    assert!(is_full(&json), "{json:#}");
+    assert!(json["full_reasons"][0]
+        .as_str()
+        .unwrap()
+        .contains("outside the git repository"));
+}
+
+#[test]
+fn paths_in_included_config_files_start_from_their_own_directory() {
+    let repo = chain();
+    repo.write(
+        ".cargo/config.toml",
+        "include = [\"../crates/lonely/.cargo/vendor.toml\"]\n",
+    );
+    repo.write(
+        "crates/lonely/.cargo/vendor.toml",
+        "[source.vendored]\ndirectory = \"vendor\"\n",
+    );
+    repo.write("crates/lonely/vendor/widget/src/lib.rs", "pub fn w() {}\n");
+    repo.commit("included vendor config");
+    repo.append("crates/lonely/vendor/widget/src/lib.rs", "// changed\n");
+    let json = repo.select("HEAD", &[]);
+    assert!(is_full(&json), "{json:#}");
 }
 
 /// A small deterministic generator, so the property test needs no extra crate.
