@@ -215,7 +215,22 @@ fn leaf_change_selects_only_the_leaf() {
     repo.append("crates/app/src/lib.rs", "pub fn g() {}\n");
     let json = repo.select("HEAD", &[]);
     assert_eq!(selected(&json), ["app"]);
-    assert_eq!(json["cargo_args"], serde_json::json!(["-p", "app"]));
+    assert_eq!(
+        json["cargo_args"],
+        serde_json::json!([
+            "--workspace",
+            "--exclude",
+            "builder",
+            "--exclude",
+            "core",
+            "--exclude",
+            "lonely",
+            "--exclude",
+            "mid",
+            "--exclude",
+            "tester"
+        ])
+    );
 }
 
 #[test]
@@ -245,6 +260,7 @@ fn full_run_files_select_the_whole_workspace() {
         ".cargo/config.toml",
         ".cargo/config",
         "crates/mid/.cargo/config.toml",
+        "crates/mid/Cargo.toml",
         "crates/mid/build.rs",
         "scripts/release.sh",
         "README.md",
@@ -374,7 +390,13 @@ fn removed_package_selects_the_whole_workspace() {
     fs::remove_dir_all(repo.path("crates/lonely")).unwrap();
     let json = repo.select("HEAD", &[]);
     assert!(is_full(&json), "{json:#}");
-    assert_eq!(json["changed_files"][0]["effect"], "outside");
+    let lib = json["changed_files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|file| file["path"] == "crates/lonely/src/lib.rs")
+        .unwrap();
+    assert_eq!(lib["effect"], "outside");
     assert_eq!(selected(&json).len(), 5);
 }
 
@@ -501,6 +523,11 @@ fn non_member_path_dependency_selects_its_users() {
     assert!(!is_full(&json), "{json:#}");
     assert_eq!(selected(&json), ["lonely"]);
     assert_eq!(json["changed_files"][0]["effect"], "path-dependency");
+    // The shim could depend on any member, so a member change selects the shim's users.
+    repo.git(&["checkout", "-q", "--", "."]);
+    repo.append("crates/core/src/lib.rs", "pub fn g() {}\n");
+    let json = repo.select("HEAD", &[]);
+    assert!(selected(&json).contains(&"lonely".to_string()), "{json:#}");
 }
 
 #[test]
@@ -539,7 +566,10 @@ fn args_prints_package_flags() {
     repo.append("crates/mid/src/lib.rs", "pub fn g() {}\n");
     let output = repo.tia(&["tia", "args", "--base", "HEAD"]);
     assert!(output.status.success());
-    assert_eq!(stdout(&output).trim(), "-p app -p mid");
+    assert_eq!(
+        stdout(&output).trim(),
+        "--workspace --exclude builder --exclude core --exclude lonely --exclude tester"
+    );
     repo.append("Cargo.lock", "\n");
     let output = repo.tia(&["args", "--base", "HEAD"]);
     assert_eq!(stdout(&output).trim(), "--workspace");
@@ -624,8 +654,8 @@ fn test_and_nextest_run_the_selection() {
     let calls = fs::read_to_string(repo.path("cargo-calls.log")).unwrap();
     assert_eq!(
         calls,
-        "test -p app -p mid --no-fail-fast\n\
-         nextest run -p app -p mid --profile ci\n\
+        "test --workspace --exclude builder --exclude core --exclude lonely --exclude tester --no-fail-fast\n\
+         nextest run --workspace --exclude builder --exclude core --exclude lonely --exclude tester --profile ci\n\
          nextest run --workspace\n"
     );
 }
@@ -633,6 +663,14 @@ fn test_and_nextest_run_the_selection() {
 #[test]
 fn test_runs_cargo_test_only_on_the_selection() {
     let repo = chain();
+    // Build output and a new lockfile must not look like changes.
+    repo.write(".gitignore", "/target\n");
+    let status = isolated(Command::new(env!("CARGO")))
+        .args(["generate-lockfile", "--offline"])
+        .current_dir(&repo.dir)
+        .status()
+        .unwrap();
+    assert!(status.success());
     repo.append(
         "crates/core/src/lib.rs",
         "#[test]\nfn core_works() { assert_eq!(f(), 1); }\n",
@@ -646,14 +684,144 @@ fn test_runs_cargo_test_only_on_the_selection() {
     repo.append("crates/mid/src/lib.rs", "// changed\n");
     let output = repo.tia(&["tia", "test", "--base", "HEAD"]);
     assert!(output.status.success(), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("selected: 2 of 6 packages"),
+        "{}",
+        stderr(&output)
+    );
 
     repo.append("crates/lonely/src/lib.rs", "// changed\n");
     let output = repo.tia(&["tia", "test", "--base", "HEAD"]);
     assert_eq!(output.status.code(), Some(101), "{}", stderr(&output));
     assert!(
+        stderr(&output).contains("selected: 3 of 6 packages"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(
         stdout(&output).contains("lonely is broken")
             || stderr(&output).contains("lonely is broken")
     );
+}
+
+#[test]
+fn missing_origin_head_selects_the_whole_workspace() {
+    let origin = chain();
+    let parent = Repo::new("nohead");
+    let status = isolated(Command::new("git"))
+        .args(["clone", "-q"])
+        .arg(&origin.dir)
+        .arg(parent.path("work"))
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let clone = Repo {
+        dir: parent.path("work"),
+    };
+    clone.git(&["remote", "set-head", "origin", "-d"]);
+    clone.append("crates/app/src/lib.rs", "pub fn g() {}\n");
+    let output = clone.tia(&["list", "--json"]);
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(is_full(&json), "no guess at origin/main: {json:#}");
+    assert!(json["full_reasons"][0]
+        .as_str()
+        .unwrap()
+        .contains("origin/HEAD"));
+    assert_eq!(selected(&clone.select("origin/main", &[])), ["app"]);
+}
+
+#[test]
+fn several_merge_bases_select_the_whole_workspace() {
+    let repo = chain();
+    repo.git(&["checkout", "-q", "-b", "side"]);
+    repo.append("crates/app/src/lib.rs", "// side\n");
+    let side = repo.commit("side");
+    repo.git(&["checkout", "-q", "main"]);
+    repo.append("crates/core/src/lib.rs", "// main\n");
+    let main = repo.commit("main");
+    // Criss-cross: each branch merges the other's first commit.
+    repo.git(&["merge", "-q", "--no-ff", "--no-edit", &side]);
+    repo.git(&["checkout", "-q", "side"]);
+    repo.git(&["merge", "-q", "--no-ff", "--no-edit", &main]);
+    let json = repo.select("main", &[]);
+    assert!(is_full(&json), "{json:#}");
+    assert!(json["full_reasons"][0]
+        .as_str()
+        .unwrap()
+        .contains("2 merge bases"));
+}
+
+#[test]
+fn committed_only_needs_committed_manifests() {
+    let repo = chain();
+    repo.append("crates/core/src/lib.rs", "pub fn g() {}\n");
+    repo.commit("core");
+    // The workspace graph comes from the working tree, which no longer matches HEAD.
+    repo.append("crates/app/Cargo.toml", "\n");
+    let json = repo.select("HEAD~1", &["--committed"]);
+    assert!(is_full(&json), "{json:#}");
+    assert!(json["full_reasons"][0]
+        .as_str()
+        .unwrap()
+        .contains("uncommitted"));
+    // Other uncommitted files do not matter with --committed.
+    repo.git(&["checkout", "-q", "--", "."]);
+    repo.write("notes.txt", "notes\n");
+    let json = repo.select("HEAD~1", &["--committed"]);
+    assert_eq!(selected(&json), ["app", "builder", "core", "mid", "tester"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_files_select_the_package_that_holds_the_link() {
+    let repo = chain();
+    std::os::unix::fs::symlink(
+        "../../lonely/src/lib.rs",
+        repo.path("crates/app/src/shared.rs"),
+    )
+    .unwrap();
+    repo.commit("link");
+    repo.append("crates/lonely/src/lib.rs", "// changed\n");
+    let json = repo.select("HEAD", &[]);
+    assert_eq!(selected(&json), ["app", "lonely"], "{json:#}");
+}
+
+#[test]
+fn assume_unchanged_files_still_count() {
+    let repo = chain();
+    repo.git(&[
+        "update-index",
+        "--assume-unchanged",
+        "crates/lonely/src/lib.rs",
+    ]);
+    repo.append("crates/lonely/src/lib.rs", "// hidden from git diff\n");
+    assert_eq!(selected(&repo.select("HEAD", &[])), ["lonely"]);
+}
+
+#[test]
+fn submodule_changes_count_even_when_git_config_hides_them() {
+    let sub = Repo::new("sub");
+    sub.write("data.txt", "1\n");
+    sub.commit("data");
+    let repo = chain();
+    repo.git(&[
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        sub.dir.to_str().unwrap(),
+        "crates/lonely/vendor",
+    ]);
+    repo.commit("submodule");
+    repo.git(&["config", "diff.ignoreSubmodules", "all"]);
+    // A new commit inside the submodule moves its gitlink.
+    let inner = Repo {
+        dir: repo.path("crates/lonely/vendor"),
+    };
+    inner.append("data.txt", "2\n");
+    inner.commit("bump");
+    assert_eq!(selected(&repo.select("HEAD", &[])), ["lonely"]);
 }
 
 /// A small deterministic generator, so the property test needs no extra crate.

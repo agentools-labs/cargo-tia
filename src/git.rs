@@ -13,6 +13,8 @@ pub struct Changes {
     pub merge_base: String,
     /// Changed, added, deleted and (unless committed-only) untracked files.
     pub files: Vec<String>,
+    /// Tracked symbolic links as (link, resolved target), relative to the workspace root.
+    pub symlinks: Vec<(String, String)>,
 }
 
 /// Why the change set is unknown. The caller then selects the full workspace.
@@ -25,81 +27,139 @@ pub struct Unknown {
 
 /// Lists the files that changed since the merge base of `base` and `HEAD`.
 ///
-/// Without `base`, the base is the default branch of `origin`. Unless `committed_only`
-/// is set, the list includes staged, unstaged and untracked (not ignored) files.
+/// Without `base`, the base is `origin/HEAD`, the default branch of `origin`. Unless
+/// `committed_only` is set, the list includes staged, unstaged and untracked (not ignored)
+/// files, and files marked assume-unchanged.
 pub fn changed_files(
     workspace_root: &Path,
     base: Option<&str>,
     committed_only: bool,
 ) -> Result<Changes, Unknown> {
-    let unknown = |base: Option<&str>, reason: String| Unknown {
+    let fail = |base: Option<&str>, reason: String| Unknown {
         base: base.map(str::to_string),
         reason,
     };
     let toplevel = git(workspace_root, &["rev-parse", "--show-toplevel"])
-        .map_err(|error| unknown(base, format!("not in a git work tree: {error}")))?;
+        .map_err(|error| fail(base, format!("not in a git work tree: {error}")))?;
     let toplevel = normalize(Path::new(toplevel.trim_end_matches(['\n', '\r'])));
     let base = match base {
         Some(base) => base.to_string(),
         None => default_base(&toplevel).ok_or_else(|| {
-            unknown(
+            fail(
                 None,
-                "cannot find the default branch of `origin`; pass --base".to_string(),
+                "origin/HEAD is not set: pass --base, or run `git remote set-head origin --auto`"
+                    .to_string(),
             )
         })?,
     };
-    let merge_base = git(&toplevel, &["merge-base", &base, "HEAD"]).map_err(|error| {
-        unknown(
-            Some(&base),
-            format!("cannot find the merge base of `{base}` and HEAD (shallow clone?): {error}"),
-        )
+    let fail = |reason: String| fail(Some(&base), reason);
+    let merge_bases = git(&toplevel, &["merge-base", "--all", &base, "HEAD"]).map_err(|error| {
+        fail(format!(
+            "cannot find the merge base of `{base}` and HEAD (shallow clone?): {error}"
+        ))
     })?;
-    let merge_base = merge_base.trim().to_string();
+    let merge_bases: Vec<&str> = merge_bases.split_whitespace().collect();
+    let merge_base = match merge_bases.as_slice() {
+        [one] => one.to_string(),
+        _ => {
+            return Err(fail(format!(
+                "`{base}` and HEAD have {} merge bases",
+                merge_bases.len()
+            )))
+        }
+    };
 
-    let diff = [
-        "diff",
-        "--name-only",
-        "-z",
-        "--no-renames",
-        "--no-ext-diff",
-        "--no-color",
-    ];
-    let mut listed = Vec::new();
+    let list = |args: &[&str]| -> Result<Vec<String>, Unknown> {
+        let output = git(&toplevel, args)
+            .map_err(|error| fail(format!("cannot list changed files: {error}")))?;
+        Ok(output
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .map(str::to_string)
+            .collect())
+    };
+    let diff = |revisions: &[&str]| -> Result<Vec<String>, Unknown> {
+        let mut args = vec![
+            "diff",
+            "--name-only",
+            "-z",
+            "--no-renames",
+            "--no-ext-diff",
+            "--no-color",
+            "--ignore-submodules=none",
+        ];
+        args.extend(revisions);
+        args.push("--");
+        list(&args)
+    };
+    let untracked = || list(&["ls-files", "-z", "--others", "--exclude-standard"]);
+    // Each entry is "<tag> <mode> <object> <stage>\t<path>".
+    let index = list(&["ls-files", "-z", "-v", "-s"])?;
+
+    let mut paths;
     if committed_only {
-        let mut args = diff.to_vec();
-        args.extend([merge_base.as_str(), "HEAD", "--"]);
-        listed.push(git(&toplevel, &args));
+        paths = diff(&[&merge_base, "HEAD"])?;
+        // The workspace graph comes from the working tree, so it must match HEAD.
+        let mut dirty = diff(&["HEAD"])?;
+        dirty.extend(untracked()?);
+        if let Some(manifest) = dirty
+            .iter()
+            .find(|path| path.rsplit('/').next() == Some("Cargo.toml"))
+        {
+            return Err(fail(format!(
+                "`{manifest}` has uncommitted changes, so the workspace may differ from HEAD"
+            )));
+        }
     } else {
-        let mut args = diff.to_vec();
-        args.extend([merge_base.as_str(), "--"]);
-        listed.push(git(&toplevel, &args));
-        listed.push(git(
-            &toplevel,
-            &["ls-files", "-z", "--others", "--exclude-standard"],
-        ));
+        paths = diff(&[&merge_base])?;
+        paths.extend(untracked()?);
+        // `git diff` does not report edits to files marked assume-unchanged.
+        for entry in &index {
+            if let Some((meta, path)) = entry.split_once('\t') {
+                let tag = meta.split(' ').next().unwrap_or_default();
+                if !tag.is_empty() && tag.chars().all(|c| c.is_ascii_lowercase()) {
+                    paths.push(path.to_string());
+                }
+            }
+        }
     }
 
     let root = normalize(workspace_root);
-    let mut files = Vec::new();
-    for output in listed {
-        let output = output
-            .map_err(|error| unknown(Some(&base), format!("cannot list changed files: {error}")))?;
-        for path in output.split('\0').filter(|path| !path.is_empty()) {
-            files.push(relative(&root, &toplevel.join(path)));
-        }
-    }
+    let mut files: Vec<String> = paths
+        .iter()
+        .map(|path| relative(&root, &toplevel.join(path)))
+        .collect();
     files.sort();
     files.dedup();
+
+    let mut symlinks = Vec::new();
+    for entry in &index {
+        let Some((meta, path)) = entry.split_once('\t') else {
+            continue;
+        };
+        if meta.split(' ').nth(1) != Some("120000") {
+            continue;
+        }
+        let link = toplevel.join(path);
+        let Ok(target) = std::fs::read_link(&link) else {
+            continue;
+        };
+        let target = link.parent().unwrap_or(&toplevel).join(target);
+        symlinks.push((relative(&root, &link), relative(&root, &normalize(&target))));
+    }
+    symlinks.sort();
+
     Ok(Changes {
         base,
         merge_base,
         files,
+        symlinks,
     })
 }
 
-/// `origin/HEAD` when the clone records it, else the first of `origin/main` and `origin/master`.
+/// The branch that `origin/HEAD` points to. No guess when it is not set.
 fn default_base(toplevel: &Path) -> Option<String> {
-    if let Ok(head) = git(
+    let head = git(
         toplevel,
         &[
             "symbolic-ref",
@@ -107,27 +167,10 @@ fn default_base(toplevel: &Path) -> Option<String> {
             "--short",
             "refs/remotes/origin/HEAD",
         ],
-    ) {
-        let head = head.trim();
-        if !head.is_empty() {
-            return Some(head.to_string());
-        }
-    }
-    ["origin/main", "origin/master"]
-        .into_iter()
-        .find(|candidate| {
-            git(
-                toplevel,
-                &[
-                    "rev-parse",
-                    "--verify",
-                    "--quiet",
-                    &format!("{candidate}^{{commit}}"),
-                ],
-            )
-            .is_ok()
-        })
-        .map(str::to_string)
+    )
+    .ok()?;
+    let head = head.trim();
+    (!head.is_empty()).then(|| head.to_string())
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
@@ -135,6 +178,8 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
         .arg("-C")
         .arg(dir)
         .args(args)
+        // A partial clone must not fetch missing objects: the command fails instead.
+        .env("GIT_NO_LAZY_FETCH", "1")
         .output()
         .map_err(|error| format!("cannot run git: {error}"))?;
     if output.status.success() {

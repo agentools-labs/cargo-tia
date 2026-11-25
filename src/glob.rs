@@ -40,12 +40,12 @@ fn match_segment(pattern: &str, segment: &str) -> bool {
     // Position of the last `*` in the pattern and the segment position it was tried at.
     let mut star: Option<(usize, usize)> = None;
     while s < segment.len() {
-        if p < pattern.len() && (pattern[p] == '?' || pattern[p] == segment[s]) {
-            p += 1;
-            s += 1;
-        } else if p < pattern.len() && pattern[p] == '*' {
+        if p < pattern.len() && pattern[p] == '*' {
             star = Some((p, s));
             p += 1;
+        } else if p < pattern.len() && (pattern[p] == '?' || pattern[p] == segment[s]) {
+            p += 1;
+            s += 1;
         } else if let Some((star_p, star_s)) = star {
             p = star_p + 1;
             s = star_s + 1;
@@ -77,6 +77,9 @@ mod tests {
         assert!(matches("a*b*c", "aXXbYYc"));
         assert!(matches("a*b*c", "abc"));
         assert!(!matches("a*b*c", "aXXbYY"));
+        // A `*` in the path is an ordinary character for a `*` in the pattern.
+        assert!(matches("a*b", "a*xb"));
+        assert!(matches("**/a*b", "crates/core/a*xb"));
     }
 
     #[test]

@@ -5,8 +5,10 @@ use crate::workspace::Workspace;
 use std::collections::VecDeque;
 
 /// Files whose change can affect every package. Globs are relative to the workspace root.
+/// A member manifest is one too: it can change the features that Cargo unifies for other
+/// packages.
 pub const FULL_RUN: &[&str] = &[
-    "Cargo.toml",
+    "**/Cargo.toml",
     "Cargo.lock",
     "**/rust-toolchain",
     "**/rust-toolchain.toml",
@@ -141,12 +143,29 @@ fn contains(dir: &str, path: &str) -> bool {
 
 /// Selects the changed packages and every package that depends on them, directly or not.
 /// Any file that is a full-run file or lies outside every package selects the full workspace.
-pub fn select(workspace: &Workspace, rules: &Rules, files: &[String]) -> Selection {
+///
+/// `symlinks` holds tracked symbolic links as (link, target). A changed file below a target
+/// also counts as changed at the link, because the package that holds the link reads it.
+pub fn select(
+    workspace: &Workspace,
+    rules: &Rules,
+    files: &[String],
+    symlinks: &[(String, String)],
+) -> Selection {
     let mut full_reasons = Vec::new();
     let mut changed = Vec::new();
     let mut classified = Vec::new();
-    for path in files {
-        let effect = classify(workspace, rules, path);
+    // Targets are canonical, so one step through the links reaches every reader.
+    let reached = files.iter().flat_map(|path| {
+        let through_links = symlinks.iter().filter_map(move |(link, target)| {
+            let rest = path.strip_prefix(target.as_str())?;
+            (rest.is_empty() || rest.starts_with('/')).then(|| format!("{link}{rest}"))
+        });
+        std::iter::once(path.clone()).chain(through_links)
+    });
+    let reached: std::collections::BTreeSet<String> = reached.collect();
+    for path in reached {
+        let effect = classify(workspace, rules, &path);
         match &effect {
             Effect::FullRun(why) => full_reasons.push(format!("`{path}` {why}")),
             Effect::Outside => full_reasons.push(format!("`{path}` is outside every package")),
@@ -154,8 +173,9 @@ pub fn select(workspace: &Workspace, rules: &Rules, files: &[String]) -> Selecti
             Effect::PathDependency(users) => changed.extend(users),
             Effect::Ignored(_) => {}
         }
-        classified.push((path.clone(), effect));
+        classified.push((path, effect));
     }
+
     if !full_reasons.is_empty() {
         return Selection {
             full_reasons,
@@ -179,6 +199,13 @@ fn dependents_closure(workspace: &Workspace, changed: &[usize]) -> Vec<(usize, R
     for (index, package) in workspace.packages.iter().enumerate() {
         for &dep in &package.deps {
             dependents[dep].push(index);
+        }
+    }
+    // `cargo metadata --no-deps` does not list the dependencies of a path dependency that is
+    // not a member. It can depend on any member, so its users depend on every member.
+    for (_, users) in &workspace.foreign {
+        for (member, member_dependents) in dependents.iter_mut().enumerate() {
+            member_dependents.extend(users.iter().filter(|&&user| user != member));
         }
     }
     let mut reason: Vec<Option<Reason>> = vec![None; count];
@@ -217,7 +244,7 @@ mod tests {
         }
     }
 
-    /// core <- mid <- app; tool is independent; vendor/v is a path dependency of tool.
+    /// core <- mid <- app; tool is independent.
     fn workspace() -> Workspace {
         Workspace {
             packages: vec![
@@ -226,7 +253,6 @@ mod tests {
                 package("mid", "crates/mid", &[1]),
                 package("tool", "tools/tool", &[]),
             ],
-            foreign: vec![("vendor/v".to_string(), vec![3])],
             build_scripts: vec!["crates/core/gen.rs".to_string()],
             full_run: vec!["ci/**".to_string()],
             ignore: vec!["**/*.md".to_string()],
@@ -249,7 +275,12 @@ mod tests {
     #[test]
     fn selects_changed_package_and_transitive_dependents() {
         let ws = workspace();
-        let selection = select(&ws, &Rules::default(), &files(&["crates/core/src/lib.rs"]));
+        let selection = select(
+            &ws,
+            &Rules::default(),
+            &files(&["crates/core/src/lib.rs"]),
+            &[],
+        );
         assert!(!selection.is_full());
         assert_eq!(names(&ws, &selection), ["app", "core", "mid"]);
         assert_eq!(
@@ -265,14 +296,19 @@ mod tests {
     #[test]
     fn leaf_change_selects_only_the_leaf() {
         let ws = workspace();
-        let selection = select(&ws, &Rules::default(), &files(&["crates/app/tests/it.rs"]));
+        let selection = select(
+            &ws,
+            &Rules::default(),
+            &files(&["crates/app/tests/it.rs"]),
+            &[],
+        );
         assert_eq!(names(&ws, &selection), ["app"]);
     }
 
     #[test]
     fn no_changes_select_nothing() {
         let ws = workspace();
-        let selection = select(&ws, &Rules::default(), &[]);
+        let selection = select(&ws, &Rules::default(), &[], &[]);
         assert!(!selection.is_full());
         assert!(selection.packages.is_empty());
     }
@@ -287,11 +323,12 @@ mod tests {
             "rust-toolchain",
             ".cargo/config.toml",
             "crates/app/.cargo/config",
+            "crates/app/Cargo.toml",
             "crates/app/build.rs",
             "crates/core/gen.rs",
             "ci/run.sh",
         ] {
-            let selection = select(&ws, &Rules::default(), &files(&[path]));
+            let selection = select(&ws, &Rules::default(), &files(&[path]), &[]);
             assert!(selection.is_full(), "{path}");
             assert_eq!(selection.packages.len(), 4, "{path}");
             assert!(selection.packages.iter().all(|(_, r)| *r == Reason::Full));
@@ -306,31 +343,36 @@ mod tests {
             "crates/notes.txt",
             "../outside/lib.rs",
         ] {
-            let selection = select(&ws, &Rules::default(), &files(&[path]));
+            let selection = select(&ws, &Rules::default(), &files(&[path]), &[]);
             assert!(selection.is_full(), "{path}");
             assert_eq!(selection.files[0].1, Effect::Outside);
         }
     }
 
     #[test]
-    fn member_manifests_are_package_files() {
+    fn member_manifests_select_everything() {
         let ws = workspace();
-        let selection = select(&ws, &Rules::default(), &files(&["crates/mid/Cargo.toml"]));
-        assert_eq!(names(&ws, &selection), ["app", "mid"]);
+        let selection = select(
+            &ws,
+            &Rules::default(),
+            &files(&["crates/mid/Cargo.toml"]),
+            &[],
+        );
+        assert!(selection.is_full());
     }
 
     #[test]
     fn ignore_globs_drop_files_but_never_full_run_files() {
         let ws = workspace();
-        let selection = select(&ws, &Rules::default(), &files(&["docs/guide.md"]));
+        let selection = select(&ws, &Rules::default(), &files(&["docs/guide.md"]), &[]);
         assert!(!selection.is_full());
         assert!(selection.packages.is_empty());
         let rules = Rules {
             ignore: vec!["**".to_string()],
             ..Rules::default()
         };
-        assert!(select(&ws, &rules, &files(&["Cargo.lock"])).is_full());
-        assert!(select(&ws, &rules, &files(&["scripts/x.sh"]))
+        assert!(select(&ws, &rules, &files(&["Cargo.lock"]), &[]).is_full());
+        assert!(select(&ws, &rules, &files(&["scripts/x.sh"]), &[])
             .packages
             .is_empty());
     }
@@ -342,13 +384,71 @@ mod tests {
             full_run: vec!["fixtures/**".to_string()],
             ..Rules::default()
         };
-        assert!(select(&ws, &rules, &files(&["fixtures/a.json"])).is_full());
+        assert!(select(&ws, &rules, &files(&["fixtures/a.json"]), &[]).is_full());
     }
 
     #[test]
-    fn path_dependency_changes_select_their_users() {
+    fn path_dependency_users_depend_on_every_member() {
+        let mut ws = workspace();
+        // vendor/v is a path dependency of tool and is not a member.
+        ws.foreign = vec![("vendor/v".to_string(), vec![3])];
+        let selection = select(
+            &ws,
+            &Rules::default(),
+            &files(&["vendor/v/src/lib.rs"]),
+            &[],
+        );
+        assert_eq!(names(&ws, &selection), ["tool"]);
+        // vendor/v may depend on core, so tool may too.
+        let selection = select(
+            &ws,
+            &Rules::default(),
+            &files(&["crates/core/src/lib.rs"]),
+            &[],
+        );
+        assert_eq!(names(&ws, &selection), ["app", "core", "mid", "tool"]);
+        let selection = select(
+            &ws,
+            &Rules::default(),
+            &files(&["tools/tool/src/lib.rs"]),
+            &[],
+        );
+        assert_eq!(names(&ws, &selection), ["tool"]);
+    }
+
+    #[test]
+    fn files_reached_through_symlinks_select_the_link_owner() {
         let ws = workspace();
-        let selection = select(&ws, &Rules::default(), &files(&["vendor/v/src/lib.rs"]));
+        let links = [
+            (
+                "crates/app/src/shared.rs".to_string(),
+                "tools/tool/src/shared.rs".to_string(),
+            ),
+            ("crates/mid/data".to_string(), "fixtures".to_string()),
+        ];
+        let selection = select(
+            &ws,
+            &Rules::default(),
+            &files(&["tools/tool/src/shared.rs"]),
+            &links,
+        );
+        assert_eq!(names(&ws, &selection), ["app", "tool"]);
+        // A directory link: the file is outside every package, so this is a full run anyway.
+        let selection = select(&ws, &Rules::default(), &files(&["fixtures/a.json"]), &links);
+        assert!(selection.is_full());
+        let ignore = Rules {
+            ignore: vec!["fixtures/**".to_string()],
+            ..Rules::default()
+        };
+        let selection = select(&ws, &ignore, &files(&["fixtures/a.json"]), &links);
+        assert_eq!(names(&ws, &selection), ["app", "mid"]);
+        // A prefix that is not a whole path segment does not reach through the link.
+        let selection = select(
+            &ws,
+            &Rules::default(),
+            &files(&["tools/tool/src/shared.rsx"]),
+            &links,
+        );
         assert_eq!(names(&ws, &selection), ["tool"]);
     }
 
@@ -361,6 +461,7 @@ mod tests {
             &ws,
             &Rules::default(),
             &files(&["crates/core/nested/src/lib.rs"]),
+            &[],
         );
         assert_eq!(names(&ws, &selection), ["nested"]);
         // A directory name that only shares a prefix does not own the file.
@@ -368,6 +469,7 @@ mod tests {
             &ws,
             &Rules::default(),
             &files(&["crates/core-extra/src/lib.rs"]),
+            &[],
         );
         assert!(selection.is_full());
     }
@@ -378,13 +480,18 @@ mod tests {
         ws.packages.push(package("root", "", &[0]));
         ws.root_entries = vec!["src".to_string(), "tests".to_string()];
         let root = ws.packages.len() - 1;
-        let selection = select(&ws, &Rules::default(), &files(&["src/main.rs"]));
+        let selection = select(&ws, &Rules::default(), &files(&["src/main.rs"]), &[]);
         assert_eq!(selection.packages, [(root, Reason::Changed)]);
-        let selection = select(&ws, &Rules::default(), &files(&["crates/core/src/lib.rs"]));
+        let selection = select(
+            &ws,
+            &Rules::default(),
+            &files(&["crates/core/src/lib.rs"]),
+            &[],
+        );
         assert_eq!(names(&ws, &selection), ["app", "core", "mid", "root"]);
         for path in ["README.txt", "crates/notes.txt", ".github/workflows/ci.yml"] {
             assert!(
-                select(&ws, &Rules::default(), &files(&[path])).is_full(),
+                select(&ws, &Rules::default(), &files(&[path]), &[]).is_full(),
                 "{path}"
             );
         }
@@ -396,7 +503,7 @@ mod tests {
             packages: vec![package("a", "a", &[1]), package("b", "b", &[0])],
             ..Workspace::default()
         };
-        let selection = select(&ws, &Rules::default(), &files(&["a/src/lib.rs"]));
+        let selection = select(&ws, &Rules::default(), &files(&["a/src/lib.rs"]), &[]);
         assert_eq!(
             selection.packages,
             [(0, Reason::Changed), (1, Reason::DependsOn(0))]
@@ -442,7 +549,7 @@ mod tests {
                 .iter()
                 .map(|&i| format!("crates/p{i:02}/src/f{}.rs", rng.below(3)))
                 .collect();
-            let selection = select(&ws, &Rules::default(), &paths);
+            let selection = select(&ws, &Rules::default(), &paths, &[]);
             assert!(!selection.is_full(), "case {case}");
             let selected: Vec<bool> = (0..count)
                 .map(|i| selection.packages.iter().any(|(j, _)| *j == i))

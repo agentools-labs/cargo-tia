@@ -21,13 +21,13 @@ cargo-tia: test only the workspace packages that a change can affect
 
 Usage:
   cargo tia [list] [--json] [options]     show the selection
-  cargo tia args [options]                print `-p NAME ...` or `--workspace`
+  cargo tia args [options]                print the cargo arguments for the selection
   cargo tia test [options] [-- ARGS]      run `cargo test` on the selection
   cargo tia nextest [options] [-- ARGS]   run `cargo nextest run` on the selection
 
 Options:
   --base REV             compare with the merge base of REV and HEAD
-                         [default: the default branch of origin]
+                         [default: origin/HEAD, the default branch of origin]
   --committed            ignore uncommitted and untracked files
   --manifest-path PATH   path to the workspace Cargo.toml
   --full-run GLOB        a changed file matching GLOB selects the full workspace (repeatable)
@@ -36,7 +36,7 @@ Options:
   -h, --help             print this help
   -V, --version          print the version
 
-The selection is the full workspace when Cargo.toml, Cargo.lock, rust-toolchain(.toml),
+The selection is the full workspace when a Cargo.toml, Cargo.lock, rust-toolchain(.toml),
 .cargo/config(.toml), a build script, a file outside every package or a full-run glob
 changed, or when git cannot tell what changed. Configure globs in the workspace manifest:
 
@@ -44,9 +44,14 @@ changed, or when git cannot tell what changed. Configure globs in the workspace 
   full-run = [\"ci/**\"]
   ignore = [\"docs/**\"]
 
+The cargo arguments are `--workspace` for the full workspace, else `--workspace` with
+`--exclude NAME` for each package that is not selected. (`-p NAME` can be ambiguous when a
+dependency has the same name as a member; `--exclude` matches members only.)
+
 ARGS after `--` go to the test command, so `cargo tia test -- --release -- --nocapture`
-runs `cargo test -p ... --release -- --nocapture`. With an empty selection, test and
-nextest run nothing and exit 0.
+runs `cargo test --workspace ... --release -- --nocapture`. They must not change the
+packages (`-p`, `--package`, `--workspace`, `--exclude`, `--manifest-path`). With an empty
+selection, test and nextest run nothing and exit 0.
 ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,12 +109,15 @@ fn parse(args: Vec<OsString>) -> Result<Parsed, String> {
             }
             _ => (arg.clone(), None),
         };
+        // A separate value never starts with `-`, so `--ignore --json` is an error.
+        // Write `--ignore=-x` for a value that starts with `-`.
         let mut value = |name: &str| -> Result<String, String> {
             match inline.clone() {
                 Some(value) => Ok(value),
                 None => args
                     .next()
                     .and_then(|value| value.into_string().ok())
+                    .filter(|value| !value.starts_with('-'))
                     .ok_or_else(|| format!("{name} needs a value")),
             }
         };
@@ -151,6 +159,20 @@ fn parse(args: Vec<OsString>) -> Result<Parsed, String> {
     if !options.passthrough.is_empty() && matches!(options.mode, Mode::List | Mode::Args) {
         return Err("arguments after `--` work with `test` and `nextest` only".to_string());
     }
+    // Arguments for cargo stop at a second `--`; after it they go to the test binaries.
+    for arg in options.passthrough.iter().take_while(|arg| *arg != "--") {
+        let arg = arg.to_string_lossy();
+        let flag = arg.split_once('=').map_or(&*arg, |(flag, _)| flag);
+        let selects = matches!(
+            flag,
+            "--package" | "--workspace" | "--all" | "--exclude" | "--manifest-path"
+        ) || arg.starts_with("-p");
+        if selects {
+            return Err(format!(
+                "`{arg}` after `--` would change the packages; pass --manifest-path before `--`"
+            ));
+        }
+    }
     Ok(Parsed::Run(options))
 }
 
@@ -181,7 +203,12 @@ fn main() -> ExitCode {
     let (base, selection) =
         match git::changed_files(&workspace.root, options.base.as_deref(), options.committed) {
             Ok(changes) => {
-                let selection = select::select(&workspace, &options.rules, &changes.files);
+                let selection = select::select(
+                    &workspace,
+                    &options.rules,
+                    &changes.files,
+                    &changes.symlinks,
+                );
                 (Base::Known(changes.base, changes.merge_base), selection)
             }
             Err(unknown) => {
@@ -248,16 +275,25 @@ enum Base {
     Unknown(Option<String>),
 }
 
-/// `--workspace` for a full selection, else `-p NAME` for each selected package.
+/// `--workspace`, plus `--exclude NAME` for each package that is not selected. Unlike
+/// `-p NAME`, `--exclude` matches workspace members only, so a dependency with the same name
+/// cannot make it ambiguous. Empty when nothing is selected.
 fn cargo_args(workspace: &Workspace, selection: &Selection) -> Vec<String> {
-    if selection.is_full() {
-        return vec!["--workspace".to_string()];
+    if selection.packages.is_empty() {
+        return Vec::new();
     }
-    selection
-        .packages
-        .iter()
-        .flat_map(|(index, _)| ["-p".to_string(), workspace.packages[*index].name.clone()])
-        .collect()
+    let mut args = vec!["--workspace".to_string()];
+    for (index, package) in workspace.packages.iter().enumerate() {
+        if !selection
+            .packages
+            .iter()
+            .any(|(selected, _)| *selected == index)
+        {
+            args.push("--exclude".to_string());
+            args.push(package.name.clone());
+        }
+    }
+    args
 }
 
 fn report(workspace: &Workspace, base: &Base, selection: &Selection) -> String {
@@ -410,6 +446,9 @@ mod tests {
             "--committed",
         ]);
         assert_eq!(options.mode, Mode::List);
+        let dashed = parse_ok(&["--ignore=-odd", "test", "--", "--release", "--", "-p"]);
+        assert_eq!(dashed.rules.ignore, ["-odd"]);
+        assert_eq!(dashed.passthrough.len(), 3);
         assert!(options.json && options.committed);
         assert_eq!(options.rules.full_run, ["a/**", "b/**"]);
     }
@@ -423,6 +462,12 @@ mod tests {
             &["--json=yes"],
             &["--base", "--output=x"],
             &["--base="],
+            &["--ignore", "--json"],
+            &["test", "--", "-p", "x"],
+            &["test", "--", "-px"],
+            &["nextest", "--", "--manifest-path=../b/Cargo.toml"],
+            &["test", "--", "--workspace"],
+            &["test", "--", "--exclude", "x"],
             &["test", "list"],
             &["--bogus"],
         ] {
