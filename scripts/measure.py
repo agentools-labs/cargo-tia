@@ -14,8 +14,8 @@ package that fails in the full run but is not selected is a missed failure. A
 full run that fails to compile, or exits non-zero without naming a failing package, makes
 the commit inconclusive.
 Run it in a clean, disposable clone: it checks out each commit (detached) and then returns to
-the starting branch or commit. Set CARGO_TARGET_DIR to keep build output out of the shared
-target directory.
+the starting branch or commit. Set CARGO_TARGET_DIR to a directory outside the clone: the
+script keeps the build output there, intermediate files (CARGO_BUILD_BUILD_DIR) included.
 """
 
 import json
@@ -91,6 +91,9 @@ def main():
     # Cargo runs inside the clone: a relative path would point into it.
     # The resolved path: a link inside the clone would be cleaned away with it.
     os.environ["CARGO_TARGET_DIR"] = os.path.realpath(target_dir)
+    # Cargo can keep intermediate files in a separate build directory that the workspace
+    # configuration places inside the clone. The environment overrides that configuration.
+    os.environ["CARGO_BUILD_BUILD_DIR"] = os.path.realpath(target_dir)
     select_count, timed_count = int(select_count), int(timed_count)
     if run(["git", "status", "--porcelain", "--untracked-files=all"], repo).stdout.strip():
         raise SystemExit(f"{repo} has uncommitted changes; use a clean clone")

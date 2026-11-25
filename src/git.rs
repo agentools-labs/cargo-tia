@@ -307,10 +307,16 @@ pub fn changed_files(
     let special = to_workspace(&special);
 
     let mut symlinks = Vec::new();
+    // Cargo reads the working tree: a link there counts whatever type the index records,
+    // for example after a staged replacement and a link restored in the working tree only.
     let tracked_links = index
         .iter()
         .filter_map(|entry| entry.split_once('\t'))
-        .filter(|(meta, _)| meta.split(' ').nth(1) == Some("120000"))
+        .filter(|(meta, path)| {
+            meta.split(' ').nth(1) == Some("120000")
+                || std::fs::symlink_metadata(toplevel.join(path))
+                    .is_ok_and(|metadata| metadata.is_symlink())
+        })
         .map(|(_, path)| path.to_string());
     for path in tracked_links.chain(submodule_links).chain(untracked_links) {
         let link = toplevel.join(&path);

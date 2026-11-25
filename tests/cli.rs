@@ -3321,6 +3321,24 @@ fn target_specifications_found_through_rust_target_path() {
 
 #[cfg(unix)]
 #[test]
+fn a_link_restored_over_a_staged_file_still_reaches_its_target() {
+    let repo = chain();
+    let link = repo.path("crates/lonely/src/shared.rs");
+    std::os::unix::fs::symlink("../../core/src/lib.rs", &link).unwrap();
+    repo.commit("link");
+    // Stage a regular file in place of the link, then restore the link in the working tree.
+    fs::remove_file(&link).unwrap();
+    repo.write("crates/lonely/src/shared.rs", "// a file\n");
+    repo.git(&["add", "crates/lonely/src/shared.rs"]);
+    fs::remove_file(&link).unwrap();
+    std::os::unix::fs::symlink("../../core/src/lib.rs", &link).unwrap();
+    repo.append("crates/core/src/lib.rs", "// changed\n");
+    let json = repo.select("HEAD", &[]);
+    assert!(selected(&json).contains(&"lonely".to_string()), "{json:#}");
+}
+
+#[cfg(unix)]
+#[test]
 fn a_link_removed_from_the_index_still_reaches_its_target() {
     let repo = chain();
     std::os::unix::fs::symlink(
