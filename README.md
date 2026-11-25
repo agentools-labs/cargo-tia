@@ -185,6 +185,7 @@ ignore = ["docs/**", "*.md"]       # these files select nothing
 - A glob matches the whole path, relative to the workspace root.
 - `*` and `?` match inside one path segment. `**` matches any number of segments.
 - A trailing `/` matches everything below a directory: `docs/` is `docs/**`.
+- A leading `./` is dropped: `./docs/**` is `docs/**`.
 - Files outside the workspace root have `../` paths, for example `../web/**`.
 - Full-run globs win over ignore globs. The built-in full-run files cannot be ignored.
 

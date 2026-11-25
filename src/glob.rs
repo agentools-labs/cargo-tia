@@ -5,12 +5,17 @@
 //! - `*` matches any run of characters inside one segment;
 //! - `?` matches one character inside one segment;
 //! - a `**` segment matches zero or more whole segments;
-//! - a trailing `/` means "everything below this directory" (`docs/` is `docs/**`).
+//! - a trailing `/` means "everything below this directory" (`docs/` is `docs/**`);
+//! - a leading `./` is dropped: `./docs/**` is `docs/**`.
 //!
 //! Other characters, including `[` and `]`, match themselves.
 
 /// Returns true when `pattern` matches the `/`-separated `path`.
 pub fn matches(pattern: &str, path: &str) -> bool {
+    let mut pattern = pattern;
+    while let Some(rest) = pattern.strip_prefix("./") {
+        pattern = rest;
+    }
     let pattern = match pattern.strip_suffix('/') {
         Some(dir) => format!("{dir}/**"),
         None => pattern.to_string(),
@@ -60,6 +65,13 @@ fn match_segment(pattern: &str, segment: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::matches;
+
+    #[test]
+    fn a_leading_dot_slash_is_dropped() {
+        assert!(matches("./crates/schema/**", "crates/schema/src/lib.rs"));
+        assert!(matches("././Cargo.lock", "Cargo.lock"));
+        assert!(matches("./docs/", "docs/a.md"));
+    }
 
     #[test]
     fn literal_patterns_match_the_whole_path() {

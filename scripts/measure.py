@@ -69,7 +69,8 @@ def compile_failures(stderr):
 
 def cargo_test(args, cwd):
     start = time.monotonic()
-    result = run(["cargo", "test", *args, "--no-fail-fast"], cwd, check=False)
+    # Colors would put escape codes into the summary that the script reads.
+    result = run(["cargo", "test", "--color", "never", *args, "--no-fail-fast"], cwd, check=False)
     seconds = time.monotonic() - start
     # A run that exits 0 has no failures, whatever its warnings say.
     failing = failing_packages(result.stderr) if result.returncode != 0 else []
@@ -113,6 +114,8 @@ def main():
     # Cargo can keep intermediate files in a separate build directory that the workspace
     # configuration places inside the clone. The environment overrides that configuration.
     os.environ["CARGO_BUILD_BUILD_DIR"] = os.path.realpath(target_dir)
+    # Plain output: the script reads Cargo's messages.
+    os.environ["CARGO_TERM_COLOR"] = "never"
     select_count, timed_count = int(select_count), int(timed_count)
     if run(["git", "status", "--porcelain", "--untracked-files=all"], repo).stdout.strip():
         raise SystemExit(f"{repo} has uncommitted changes; use a clean clone")
@@ -127,7 +130,9 @@ def main():
     if any(line.startswith("160000 ") for line in run(["git", "ls-files", "-s"], repo).stdout.splitlines()):
         raise SystemExit(f"{repo} has submodules, which this script does not replay")
     start_ref = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
-    branch = run(["git", "symbolic-ref", "-q", "--short", "HEAD"], repo, check=False).stdout.strip()
+    # The full name: a short name such as heads/v1 appears when a tag has the same name.
+    head_ref = run(["git", "symbolic-ref", "-q", "HEAD"], repo, check=False).stdout.strip()
+    branch = head_ref.removeprefix("refs/heads/") if head_ref.startswith("refs/heads/") else ""
     commits = run(
         ["git", "rev-list", "--first-parent", "-n", str(select_count), start_ref], repo
     ).stdout.split()
@@ -204,7 +209,8 @@ def main():
         run(["git", "reset", "-q", "--hard"], repo, check=False)
         run(["git", "clean", "-ffdxq"], repo, check=False)
         # Restore first: the report can be a file inside the clone.
-        restore = ["git", "checkout", "-q", branch] if branch else [
+        # `git switch` takes only a branch, never a tag of the same name.
+        restore = ["git", "switch", "-q", branch] if branch else [
             "git", "checkout", "-q", "--detach", start_ref]
         restored = run(restore, repo, check=False)
         # Cleaning can remove an ignored directory that holds the report.
