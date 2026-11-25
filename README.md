@@ -113,8 +113,9 @@ Arguments after `--` go to the test command. They must not change the packages: 
 
 These changes select the full workspace:
 
-- `Cargo.toml` and `Cargo.lock` at any depth. A member manifest can change the features that Cargo
-  unifies for other packages, so it counts as a workspace file.
+- `Cargo.toml` and `Cargo.lock` at any depth, and the file behind a member manifest that is a symbolic
+  link. A member manifest can change the features that Cargo unifies for other packages, so it counts
+  as a workspace file.
 - `rust-toolchain`, `rust-toolchain.toml`, `.cargo/config` and `.cargo/config.toml`, at any depth.
 - `build.rs` at any depth, each build script that `cargo metadata` reports, and the custom build
   scripts of path dependencies that are not members.
