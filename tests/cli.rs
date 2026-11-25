@@ -1933,6 +1933,52 @@ fn member_inside_a_build_script_source_directory() {
     assert_eq!(selected(&repo.select("HEAD", &[])), ["backend", "gen"]);
 }
 
+#[cfg(unix)]
+#[test]
+fn includes_resolve_from_a_symlink_location() {
+    let repo = chain();
+    repo.write("shared/shared.toml", "include = [\"settings.toml\"]\n");
+    std::fs::create_dir_all(repo.path("crates/app/.cargo")).unwrap();
+    std::os::unix::fs::symlink(
+        "../../../shared/shared.toml",
+        repo.path("crates/app/.cargo/shared.toml"),
+    )
+    .unwrap();
+    repo.write(
+        "crates/app/.cargo/config.toml",
+        "include = [\"shared.toml\"]\n",
+    );
+    // Cargo looks for settings.toml beside the link, not beside its target.
+    repo.write("crates/app/.cargo/settings.toml", "[env]\nX = \"1\"\n");
+    repo.commit("linked include");
+    repo.write("crates/app/.cargo/settings.toml", "[env]\nX = \"2\"\n");
+    let output = repo.tia_in(
+        &repo.path("crates/app"),
+        &["list", "--json", "--base", "HEAD"],
+    );
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(is_full(&json), "{json:#}");
+}
+
+#[test]
+fn member_inside_a_root_build_script_directory() {
+    let repo = Repo::new("root-codegen");
+    repo.write(
+        "Cargo.toml",
+        "[package]\nname = \"rootpkg\"\nversion = \"0.1.0\"\nedition = \"2021\"\nbuild = \"codegen/main.rs\"\n\n[workspace]\nmembers = [\"codegen/backend\"]\n",
+    );
+    repo.write("src/lib.rs", "pub fn r() {}\n");
+    repo.write("codegen/main.rs", "mod backend;\nfn main() {}\n");
+    repo.write(
+        "codegen/backend/Cargo.toml",
+        "[package]\nname = \"backend\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[lib]\npath = \"mod.rs\"\n",
+    );
+    repo.write("codegen/backend/mod.rs", "pub fn b() {}\n");
+    repo.commit("root build script modules");
+    repo.append("codegen/backend/mod.rs", "// changed\n");
+    assert_eq!(selected(&repo.select("HEAD", &[])), ["backend", "rootpkg"]);
+}
+
 /// A small deterministic generator, so the property test needs no extra crate.
 struct Rng(u64);
 

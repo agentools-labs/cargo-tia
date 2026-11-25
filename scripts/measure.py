@@ -89,9 +89,16 @@ def main():
             run(["git", "checkout", "-q", "--detach", commit], repo)
             started = time.monotonic()
             listed = run(
-                [tia, "list", "--json", "--committed", "--base", f"{commit}^1"], repo
+                [tia, "list", "--json", "--committed", "--base", f"{commit}^1"], repo,
+                check=False,
             )
             selection_seconds = time.monotonic() - started
+            if listed.returncode != 0:
+                # For example, a manifest that does not parse at this commit.
+                row = {"commit": commit, "error": listed.stderr.strip()}
+                rows.append(row)
+                print(json.dumps(row), flush=True)
+                continue
             data = json.loads(listed.stdout)
             row = {
                 "commit": commit,

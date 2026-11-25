@@ -98,15 +98,17 @@ Arguments after `--` go to the test command. They must not change the packages: 
    members. Normal, dev, build, optional and target-specific dependencies all count. A member inside
    the source directory of another package's target (also a build script, except one of the root
    package) counts as its dependency, because that target can compile the member's files as modules. Cargo does not
-   report every edge, so two kinds of members count as dependents of every member:
-   - a member that uses a path dependency that is not a member;
-   - a member with registry or git dependencies, when a `[patch]` or `[replace]` entry points to a
-     member: those dependencies can depend on the patched member. This counts for the patched
-     members only. A local patch path that is not a member counts for every member, and it is a
-     path dependency of each member with registry or git dependencies. Cargo `paths` overrides
-     count the same way, for every member below the override directory. The tool reads patches and overrides as text from the workspace manifest
-     and from the Cargo configuration files in the workspace root, the current directory, their
-     parents and `CARGO_HOME`, and from the files that those configuration files include.
+   report every edge, so the tool adds these:
+   - A member that uses a path dependency that is not a member depends on every member.
+   - When a `[patch]` or `[replace]` entry points to a member, every member with registry or git
+     dependencies depends on that member: those dependencies can depend on it. A local patch path
+     that is not a member counts as every member, and it is a path dependency of each member with
+     registry or git dependencies. Cargo `paths` overrides count the same way, for every member below
+     the override directory.
+
+   The tool reads patches and overrides as text from the workspace manifest, from the Cargo
+   configuration files in the workspace root, the current directory, their parents and `CARGO_HOME`,
+   and from the files that those configuration files include.
 
 These changes select the full workspace:
 

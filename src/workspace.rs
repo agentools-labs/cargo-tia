@@ -132,10 +132,10 @@ pub fn load(cargo: &OsStr, manifest_path: Option<&Path>) -> Result<Workspace, St
 /// modules of that target, so the member counts as one of its users.
 fn add_nested_users(workspace: &mut Workspace) {
     for (src, declarer) in &workspace.targets {
-        if workspace.build_scripts.contains(src) && workspace.packages[*declarer].dir.is_empty() {
+        let source_dir = src.rsplit_once('/').map_or("", |(dir, _)| dir);
+        if workspace.build_scripts.contains(src) && source_dir.is_empty() {
             continue;
         }
-        let source_dir = src.rsplit_once('/').map_or("", |(dir, _)| dir);
         for (dir, users) in &mut workspace.foreign {
             if contains(source_dir, dir) && !users.contains(declarer) {
                 users.push(*declarer);
@@ -358,8 +358,11 @@ fn overrides(workspace: &Workspace) -> Overrides {
             recursive = key_strings(&text, "paths");
             let dir = file.parent().unwrap_or(root).to_path_buf();
             for include in key_strings(&text, "include") {
-                let included = normalize(&dir.join(include));
+                // Cargo resolves an include, and the paths in it, from where the include
+                // points, even when that is a symbolic link. Changes count at both places.
+                let included = lexical(&dir.join(include));
                 includes.push(relative(root, &included));
+                includes.push(relative(root, &normalize(&included)));
                 // Relative paths in a configuration file start from the parent of its directory.
                 let included_base = included
                     .parent()
@@ -564,10 +567,10 @@ pub fn from_metadata(metadata: &Value) -> Result<Workspace, String> {
             if is_build_script {
                 workspace.build_scripts.push(src.clone());
             }
-            // A build script of the root package sits in the workspace root, which holds every
-            // member: its module tree is skipped. Other targets count.
-            if !(is_build_script && is_root) {
-                let dir = src.rsplit_once('/').map_or("", |(dir, _)| dir);
+            // A build script directly in the workspace root would hold every member: its
+            // module tree is skipped. Other targets count.
+            let dir = src.rsplit_once('/').map_or("", |(dir, _)| dir);
+            if !(is_build_script && dir.is_empty()) {
                 source_dirs.push((dir.to_string(), index));
             }
             if is_root {
@@ -671,9 +674,11 @@ pub fn contains(dir: &str, path: &str) -> bool {
 
 /// Resolves symbolic links when the path exists; otherwise removes `.` and `..` lexically.
 pub fn normalize(path: &Path) -> PathBuf {
-    if let Ok(canonical) = std::fs::canonicalize(path) {
-        return canonical;
-    }
+    std::fs::canonicalize(path).unwrap_or_else(|_| lexical(path))
+}
+
+/// Removes `.` and `..` segments without reading the file system.
+pub fn lexical(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
         match component {
