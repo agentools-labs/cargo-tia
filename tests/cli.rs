@@ -2119,6 +2119,51 @@ fn manifests_behind_symlinks() {
     assert!(is_full(&json), "{json:#}");
 }
 
+#[cfg(unix)]
+#[test]
+fn committed_only_distrusts_a_deleted_config_behind_a_linked_directory() {
+    let repo = chain();
+    repo.write(
+        "crates/setup/cargo-config/config.toml",
+        "[build]\njobs = 2\n",
+    );
+    std::os::unix::fs::symlink("crates/setup/cargo-config", repo.path(".cargo")).unwrap();
+    repo.commit("linked .cargo directory");
+    repo.append("crates/core/src/lib.rs", "pub fn g() {}\n");
+    repo.commit("core");
+    fs::remove_file(repo.path("crates/setup/cargo-config/config.toml")).unwrap();
+    let json = repo.select("HEAD~1", &["--committed"]);
+    assert!(is_full(&json), "{json:#}");
+}
+
+#[cfg(unix)]
+#[test]
+fn committed_only_distrusts_untracked_links() {
+    let repo = chain();
+    repo.append("crates/core/src/lib.rs", "pub fn g() {}\n");
+    repo.commit("core");
+    std::os::unix::fs::symlink(
+        "../../core/src/lib.rs",
+        repo.path("crates/lonely/src/linked.rs"),
+    )
+    .unwrap();
+    let json = repo.select("HEAD~1", &["--committed"]);
+    assert!(is_full(&json), "{json:#}");
+}
+
+#[test]
+fn reverted_working_tree_files_select_nothing() {
+    let repo = chain();
+    let original = fs::read_to_string(repo.path("crates/lonely/src/lib.rs")).unwrap();
+    repo.append("crates/lonely/src/lib.rs", "// edit\n");
+    repo.commit("edit");
+    repo.git(&["config", "diff.autoRefreshIndex", "false"]);
+    // Restore the base content without staging it.
+    repo.write("crates/lonely/src/lib.rs", &original);
+    let json = repo.select("HEAD~1", &[]);
+    assert!(selected(&json).is_empty(), "{json:#}");
+}
+
 /// A small deterministic generator, so the property test needs no extra crate.
 struct Rng(u64);
 

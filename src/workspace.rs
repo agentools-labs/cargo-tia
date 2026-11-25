@@ -695,7 +695,18 @@ pub fn contains(dir: &str, path: &str) -> bool {
 
 /// Resolves symbolic links when the path exists; otherwise removes `.` and `..` lexically.
 pub fn normalize(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| lexical(path))
+    if let Ok(canonical) = std::fs::canonicalize(path) {
+        return canonical;
+    }
+    // A deleted file: resolve the links of the directory that still holds it.
+    let path = lexical(path);
+    match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) => match std::fs::canonicalize(parent) {
+            Ok(parent) => parent.join(name),
+            Err(_) => path,
+        },
+        _ => path,
+    }
 }
 
 /// Removes `.` and `..` segments without reading the file system.
@@ -762,6 +773,18 @@ mod tests {
         assert_eq!(relative(root, Path::new("/w/ws/a/b.rs")), "a/b.rs");
         assert_eq!(relative(root, Path::new("/w/shared/x")), "../shared/x");
         assert_eq!(relative(root, Path::new("/elsewhere")), "../../elsewhere");
+    }
+
+    #[test]
+    fn normalize_resolves_the_directory_of_a_missing_file() {
+        let dir = std::env::temp_dir();
+        let missing = dir.join("cargo-tia-no-such-file");
+        assert_eq!(
+            normalize(&missing),
+            std::fs::canonicalize(&dir)
+                .unwrap()
+                .join("cargo-tia-no-such-file")
+        );
     }
 
     #[test]

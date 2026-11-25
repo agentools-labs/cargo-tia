@@ -121,6 +121,10 @@ fn parse(args: Vec<OsString>) -> Result<Parsed, String> {
                     .ok_or_else(|| format!("{name} needs a value")),
             }
         };
+        let valueless = ["--help", "--version", "--json", "--committed"];
+        if inline.is_some() && valueless.contains(&flag.as_str()) {
+            return Err(format!("{flag} takes no value"));
+        }
         match flag.as_str() {
             "-h" | "--help" => return Ok(Parsed::Help),
             "-V" | "--version" => return Ok(Parsed::Version),
@@ -142,9 +146,6 @@ fn parse(args: Vec<OsString>) -> Result<Parsed, String> {
                 };
             }
             _ => return Err(format!("unexpected argument `{arg}`; see --help")),
-        }
-        if inline.is_some() && matches!(flag.as_str(), "--json" | "--committed") {
-            return Err(format!("{flag} takes no value"));
         }
     }
     // A base that git could read as an option is never a revision.
@@ -587,6 +588,8 @@ mod tests {
             &["list", "--", "x"],
             &["--base"],
             &["--json=yes"],
+            &["--help=x"],
+            &["--version=1"],
             &["--base", "--output=x"],
             &["--base="],
             &["--ignore", "--json"],

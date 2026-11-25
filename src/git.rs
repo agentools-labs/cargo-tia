@@ -160,7 +160,16 @@ pub fn changed_files(
                 "`{link}` is a symbolic link or submodule with uncommitted changes"
             )));
         }
-        dirty.extend(untracked()?);
+        let new_files = untracked()?;
+        if let Some(link) = new_files.iter().find(|path| {
+            path.ends_with('/')
+                || std::fs::symlink_metadata(toplevel.join(path)).is_ok_and(|m| m.is_symlink())
+        }) {
+            return Err(fail(format!(
+                "`{link}` is an untracked symbolic link or repository"
+            )));
+        }
+        dirty.extend(new_files);
         dirty.extend(
             hidden
                 .iter()
@@ -306,6 +315,8 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
         .args(["-c", "core.ignoreCase=false"])
         // Weaker stat checks can hide an edit that keeps the size and modification time.
         .args(["-c", "core.trustctime=true", "-c", "core.checkStat=default"])
+        // A file that only looks modified (stat data) but matches the index is not a change.
+        .args(["-c", "diff.autoRefreshIndex=true"])
         .args(args)
         // A partial clone must not fetch missing objects: the command fails instead.
         // GIT_NO_LAZY_FETCH needs git 2.45; denying every transport covers older versions.
