@@ -1806,7 +1806,11 @@ fn committed_only_distrusts_uncommitted_cargo_configuration() {
 #[test]
 fn crate_inside_a_member_source_directory_that_another_member_uses() {
     let repo = chain();
-    repo.append("Cargo.toml", "exclude = [\"crates/app/src/engine\"]\n");
+    // With a glob in `members`, Cargo honors the exclusion: engine is not a member.
+    repo.write(
+        "Cargo.toml",
+        "[workspace]\nresolver = \"2\"\nmembers = [\"crates/*\"]\nexclude = [\"crates/app/src/engine\"]\n",
+    );
     // app compiles engine/mod.rs as a module; engine is also a non-member crate of lonely.
     repo.write("crates/app/src/lib.rs", "mod engine;\n");
     repo.write(
@@ -1825,9 +1829,12 @@ fn crate_inside_a_member_source_directory_that_another_member_uses() {
     repo.commit("engine");
     repo.append("crates/app/src/engine/mod.rs", "// changed\n");
     let json = repo.select("HEAD", &[]);
-    // Cargo 1.99 makes `engine` a member despite `exclude`, so the nested-member rule applies.
-    // A unit test in workspace.rs covers the non-member case.
-    assert_eq!(selected(&json), ["app", "engine", "lonely"], "{json:#}");
+    assert_eq!(
+        json["workspace_packages"], 6,
+        "engine is not a member: {json:#}"
+    );
+    assert_eq!(json["changed_files"][0]["effect"], "path-dependency");
+    assert_eq!(selected(&json), ["app", "lonely"], "{json:#}");
 }
 
 #[test]
@@ -2162,6 +2169,54 @@ fn reverted_working_tree_files_select_nothing() {
     repo.write("crates/lonely/src/lib.rs", &original);
     let json = repo.select("HEAD~1", &[]);
     assert!(selected(&json).is_empty(), "{json:#}");
+}
+
+#[test]
+fn paths_override_at_a_member_covers_crates_below_it() {
+    let repo = chain();
+    repo.append("Cargo.toml", "exclude = [\"crates/lonely/vendor\"]\n");
+    repo.write(".cargo/config.toml", "paths = [\"crates/lonely\"]\n");
+    vendor_crate(&repo, "crates/lonely/vendor/uuid", &[]);
+    // builder uses uuid directly; tester uses a registry uuid that the override replaces.
+    let builder = fs::read_to_string(repo.path("crates/builder/Cargo.toml")).unwrap();
+    repo.write(
+        "crates/builder/Cargo.toml",
+        &builder.replace(
+            "[dependencies]\n",
+            "[dependencies]\nuuid = { path = \"../lonely/vendor/uuid\" }\n",
+        ),
+    );
+    let tester = fs::read_to_string(repo.path("crates/tester/Cargo.toml")).unwrap();
+    repo.write(
+        "crates/tester/Cargo.toml",
+        &tester.replace("[dependencies]\n", "[dependencies]\nuuid = \"0.1\"\n"),
+    );
+    repo.commit("override");
+    repo.append("crates/lonely/vendor/uuid/src/lib.rs", "// changed\n");
+    let got = selected(&repo.select("HEAD", &[]));
+    assert!(
+        got.contains(&"builder".to_string()) && got.contains(&"tester".to_string()),
+        "{got:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn committed_only_distrusts_a_linked_workspace_manifest() {
+    let repo = chain();
+    let manifest = fs::read_to_string(repo.path("Cargo.toml")).unwrap();
+    repo.write("workspace.toml", &manifest);
+    fs::remove_file(repo.path("Cargo.toml")).unwrap();
+    std::os::unix::fs::symlink("workspace.toml", repo.path("Cargo.toml")).unwrap();
+    repo.commit("linked workspace manifest");
+    repo.append("crates/core/src/lib.rs", "pub fn g() {}\n");
+    repo.commit("core");
+    repo.append(
+        "workspace.toml",
+        "\n[workspace.metadata.tia]\nignore = [\"crates/core/**\"]\n",
+    );
+    let json = repo.select("HEAD~1", &["--committed"]);
+    assert!(is_full(&json), "{json:#}");
 }
 
 /// A small deterministic generator, so the property test needs no extra crate.

@@ -132,6 +132,13 @@ pub fn load(cargo: &OsStr, manifest_path: Option<&Path>) -> Result<Workspace, St
     follow_path_dependencies(&mut workspace);
     add_nested_users(&mut workspace);
     mark_cross_targets(&mut workspace);
+    // A workspace manifest that is a symbolic link: its target is a manifest too.
+    let manifest = workspace.root.join("Cargo.toml");
+    let target = normalize(&manifest);
+    if target != manifest {
+        let target = relative(&workspace.root, &target);
+        workspace.manifest_targets.push(target);
+    }
     Ok(workspace)
 }
 
@@ -405,9 +412,8 @@ fn overrides(workspace: &Workspace) -> Overrides {
                 contains(&dir, &workspace.packages[index].dir)
                     || workspace.packages[index].dir == dir
             }));
-            if !workspace.packages.iter().any(|p| p.dir == dir) {
-                others.push(dir);
-            }
+            // Crates below it that are not members can be overrides too.
+            others.push(dir);
         }
     }
     patched.sort_unstable();
