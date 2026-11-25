@@ -914,6 +914,41 @@ fn submodule_changes_count_even_when_git_config_hides_them() {
 
 #[cfg(unix)]
 #[test]
+fn an_unreadable_submodule_is_a_change_of_unknown_effect() {
+    use std::os::unix::fs::PermissionsExt;
+    struct Unlock(PathBuf);
+    impl Drop for Unlock {
+        fn drop(&mut self) {
+            let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o755));
+        }
+    }
+    let sub = Repo::new("sub-locked");
+    sub.write("data.txt", "1\n");
+    sub.commit("data");
+    let repo = chain();
+    repo.git(&[
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        sub.dir.to_str().unwrap(),
+        "crates/lonely/vendor",
+    ]);
+    repo.commit("submodule");
+    let vendor = repo.path("crates/lonely/vendor");
+    fs::set_permissions(&vendor, fs::Permissions::from_mode(0o000)).unwrap();
+    let _unlock = Unlock(vendor.clone());
+    // A superuser can still read it: then the case cannot occur.
+    if fs::read_dir(&vendor).is_ok() {
+        return;
+    }
+    let json = repo.select("HEAD", &[]);
+    assert!(is_full(&json), "{json:#}");
+}
+
+#[cfg(unix)]
+#[test]
 fn changed_symlinks_select_the_whole_workspace() {
     let repo = chain();
     fs::create_dir_all(repo.path("crates/lonely/src/v1")).unwrap();
@@ -3122,6 +3157,53 @@ fn a_reader_that_closes_the_pipe_early_ends_the_output_quietly() {
         );
         assert!(!stderr(&output).contains("panicked"), "{}", stderr(&output));
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn cargo_config_arguments_reach_cargo_metadata() {
+    let repo = chain();
+    // A registry that only ci/cargo.toml defines: Cargo cannot read the manifest without it.
+    let manifest = fs::read_to_string(repo.path("crates/lonely/Cargo.toml")).unwrap();
+    repo.write(
+        "crates/lonely/Cargo.toml",
+        &manifest.replace(
+            "[dependencies]\n",
+            "[dependencies]\nfoo = { version = \"1\", registry = \"company\" }\n",
+        ),
+    );
+    repo.write(
+        "ci/cargo.toml",
+        "[registries.company]\nindex = \"sparse+https://registry.invalid/index/\"\n",
+    );
+    repo.commit("private registry");
+    fs::write(
+        repo.path(".git/info/exclude"),
+        "fake-cargo.sh\ncargo-calls.log\n",
+    )
+    .unwrap();
+    let cargo = fake_cargo(&repo);
+    repo.append("crates/lonely/src/lib.rs", "// changed\n");
+    for config in [
+        &["--config", "ci/cargo.toml"][..],
+        &["--config=ci/cargo.toml"][..],
+    ] {
+        let mut args = vec!["tia", "test", "--base", "HEAD", "--"];
+        args.extend(config);
+        let output = isolated(Command::new(BIN))
+            .current_dir(&repo.dir)
+            .env("CARGO", &cargo)
+            .args(&args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{config:?}: {}", stderr(&output));
+    }
+    let calls = fs::read_to_string(repo.path("cargo-calls.log")).unwrap();
+    assert_eq!(calls.lines().count(), 2, "{calls}");
+    assert!(
+        calls.lines().all(|line| line.contains("ci/cargo.toml")),
+        "{calls}"
+    );
 }
 
 #[test]

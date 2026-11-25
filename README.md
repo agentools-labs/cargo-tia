@@ -64,7 +64,8 @@ ambiguous when a dependency has the same name and version as a member, which hap
 With an empty selection, `test` and `nextest` run nothing and exit 0. For a partial selection,
 `nextest` (0.9.75 or newer) adds `--no-tests=pass`, because the selected packages can hold no tests while the workspace
 has them; pass your own `--no-tests` after `--` to change that. `args` prints an empty line, so
-`cargo test $(cargo tia args)` then tests the default members. Use `cargo tia test` when you want to skip
+`cargo test $(cargo tia args)` then runs a plain `cargo test`, which tests what Cargo selects by default
+in the current directory. Use `cargo tia test` when you want to skip
 the run. `args` separates arguments with spaces, so for a manifest path that holds spaces, read the
 `cargo_args` array of `cargo tia list --json` instead.
 
@@ -72,7 +73,8 @@ Arguments after `--` go to the test command. They must not change the packages: 
 `-p` and `-m` (also in a group such as `-qp`), `--package`, `--workspace`, `--exclude` and
 `--manifest-path` there, and nextest's build-reuse options `--archive-file` and
 `--binaries-metadata`, which conflict with `--workspace`. A configuration option there (Cargo's `--config`, nextest's `--config-file` or
-`--tool-config-file`) can change every package, so it selects the full workspace. A custom target
+`--tool-config-file`) can change every package, so it selects the full workspace. Cargo's `--config`
+values also go to `cargo metadata`, because Cargo can need them to read the manifests. A custom target
 specification file (`--target spec.json`) there counts as a full-run file. For a partial selection
 that is not empty, so do `--features`
 (`-F`, also in a group), `--test`, `--bin`, `--example` or `--bench` with a target name or glob that no

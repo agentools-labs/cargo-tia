@@ -69,7 +69,12 @@ pub struct Workspace {
 }
 
 /// Runs `cargo metadata --no-deps --offline` and builds the workspace model.
-pub fn load(cargo: &OsStr, manifest_path: Option<&Path>) -> Result<Workspace, String> {
+/// `configs` are Cargo `--config` arguments for `cargo metadata`.
+pub fn load(
+    cargo: &OsStr,
+    manifest_path: Option<&Path>,
+    configs: &[std::ffi::OsString],
+) -> Result<Workspace, String> {
     let mut command = Command::new(cargo);
     // Through the rustup proxy, a missing toolchain must not be downloaded.
     command.env("RUSTUP_AUTO_INSTALL", "0");
@@ -83,6 +88,7 @@ pub fn load(cargo: &OsStr, manifest_path: Option<&Path>) -> Result<Workspace, St
     if let Some(path) = manifest_path {
         command.arg("--manifest-path").arg(path);
     }
+    command.args(configs);
     let output = command
         .output()
         .map_err(|error| format!("cannot run `cargo metadata`: {error}"))?;

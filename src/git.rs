@@ -334,13 +334,16 @@ pub fn changed_files(
 }
 
 /// True when an initialized submodule, or one nested in it, has changes or files that git
-/// hides. An uninitialized one is environment: false.
+/// hides, or when its directory cannot be read. An uninitialized one is environment: false.
 /// `path` is relative to `toplevel`; the submodule's tracked links are added to `links`, with
 /// paths relative to `toplevel`.
 fn submodule_unknown(toplevel: &Path, path: &str, links: &mut Vec<String>) -> bool {
     let dir = toplevel.join(path);
-    if !dir.join(".git").exists() {
-        return false;
+    // `exists` reads a permission error as "absent": the submodule would look uninitialized.
+    match dir.join(".git").try_exists() {
+        Ok(true) => {}
+        Ok(false) => return false,
+        Err(_) => return true,
     }
     let dir = dir.as_path();
     let status = git(

@@ -384,6 +384,23 @@ fn config_override(options: &Options) -> bool {
         })
 }
 
+/// Cargo's `--config` arguments after `--`. Cargo can need them to read the manifests, for
+/// example for a registry that only they define, so `cargo metadata` gets them too.
+fn cargo_configs(options: &Options) -> Vec<OsString> {
+    let mut configs = Vec::new();
+    let mut args = options.passthrough.iter().take_while(|arg| *arg != "--");
+    while let Some(arg) = args.next() {
+        if arg == "--config" {
+            if let Some(value) = args.next() {
+                configs.extend([arg.clone(), value.clone()]);
+            }
+        } else if arg.to_string_lossy().starts_with("--config=") {
+            configs.push(arg.clone());
+        }
+    }
+    configs
+}
+
 fn main() -> ExitCode {
     let options = match parse(std::env::args_os().skip(1).collect()) {
         Ok(Parsed::Run(options)) => options,
@@ -399,7 +416,11 @@ fn main() -> ExitCode {
         }
     };
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
-    let workspace = match workspace::load(&cargo, options.manifest_path.as_deref()) {
+    let workspace = match workspace::load(
+        &cargo,
+        options.manifest_path.as_deref(),
+        &cargo_configs(&options),
+    ) {
         Ok(workspace) => workspace,
         Err(error) => {
             say(&format!("error: {error}"));
