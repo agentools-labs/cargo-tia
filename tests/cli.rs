@@ -2743,6 +2743,12 @@ fn a_hidden_file_that_became_a_link_counts() {
     let repo = chain();
     repo.write("shared/helper.sh", "#!/bin/sh\n");
     repo.write("crates/lonely/tests/helper.sh", "#!/bin/sh\n");
+    // Executable, like the link's own mode, so the execute bit cannot tell the change either.
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let helper = repo.path("crates/lonely/tests/helper.sh");
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+    }
     repo.commit("helpers");
     repo.git(&[
         "update-index",
