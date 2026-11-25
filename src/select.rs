@@ -15,6 +15,8 @@ pub const FULL_RUN: &[&str] = &[
     "**/.cargo/config",
     "**/.cargo/config.toml",
     "**/build.rs",
+    // nextest's workspace configuration: test filters, timeouts and retries for every package.
+    ".config/nextest.toml",
 ];
 
 /// What one changed file does to the selection.

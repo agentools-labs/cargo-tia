@@ -1390,6 +1390,30 @@ fn use_vendor_crate(repo: &Repo, member: &str, name: &str) {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn a_non_member_target_behind_a_link_keeps_its_declared_directory() {
+    let repo = chain();
+    repo.append("Cargo.toml", "exclude = [\"vendor\"]\n");
+    vendor_crate(&repo, "vendor/a", &[]);
+    vendor_crate(&repo, "vendor/b", &[]);
+    // a's library is declared in b's directory, through a link back into a. Rust finds
+    // `mod helper;` beside the declared path: vendor/b/src/helper.rs.
+    repo.append(
+        "vendor/a/Cargo.toml",
+        "\n[lib]\npath = \"../b/src/entry.rs\"\n",
+    );
+    repo.write("vendor/a/src/lib.rs", "mod helper;\n");
+    std::os::unix::fs::symlink("../../a/src/lib.rs", repo.path("vendor/b/src/entry.rs")).unwrap();
+    repo.write("vendor/b/src/helper.rs", "pub fn h() {}\n");
+    use_vendor_crate(&repo, "lonely", "a");
+    use_vendor_crate(&repo, "builder", "b");
+    repo.commit("linked target");
+    repo.append("vendor/b/src/helper.rs", "// changed\n");
+    let json = repo.select("HEAD", &[]);
+    assert!(selected(&json).contains(&"lonely".to_string()), "{json:#}");
+}
+
 #[test]
 fn shared_nested_path_dependency_selects_every_user() {
     let repo = chain();
@@ -3204,6 +3228,16 @@ fn cargo_config_arguments_reach_cargo_metadata() {
         calls.lines().all(|line| line.contains("ci/cargo.toml")),
         "{calls}"
     );
+}
+
+#[test]
+fn nextest_configuration_selects_the_whole_workspace_despite_ignore_globs() {
+    let repo = chain();
+    repo.write(".config/nextest.toml", "[profile.default]\n");
+    repo.commit("nextest configuration");
+    repo.append(".config/nextest.toml", "slow-timeout = \"1s\"\n");
+    let json = repo.select("HEAD", &["--ignore", ".config/**"]);
+    assert!(is_full(&json), "{json:#}");
 }
 
 #[test]

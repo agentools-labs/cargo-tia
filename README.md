@@ -129,6 +129,8 @@ because a case-insensitive file system reads them so.
   link. A member manifest can change the features that Cargo unifies for other packages, so it counts
   as a workspace file.
 - `rust-toolchain`, `rust-toolchain.toml`, `.cargo/config` and `.cargo/config.toml`, at any depth.
+- `.config/nextest.toml` in the workspace root: nextest's filters, timeouts and retries for every
+  package.
 - `build.rs` at any depth, each build script that `cargo metadata` reports, and the custom build
   scripts of path dependencies that are not members.
 - A changed symbolic link or submodule, or an untracked nested repository. Its effect on other paths

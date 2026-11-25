@@ -251,15 +251,17 @@ fn follow_path_dependencies(workspace: &mut Workspace) {
             continue;
         };
         for script in key_values(&text, "build") {
-            let script = relative(&root, &normalize(&base.join(script)));
-            // Outside the dependency's directory, its modules belong to another package.
-            if !contains(&dir, &script) {
-                let parent = script.rsplit_once('/').map_or("", |(parent, _)| parent);
-                workspace
-                    .foreign_targets
-                    .push((parent.to_string(), dir.clone()));
+            // Rust finds modules beside the declared path, also when it is a link: keep both.
+            for script in declared_and_linked(&root, &base.join(script)) {
+                // Outside the dependency's directory, its modules belong to another package.
+                if !contains(&dir, &script) {
+                    let parent = script.rsplit_once('/').map_or("", |(parent, _)| parent);
+                    workspace
+                        .foreign_targets
+                        .push((parent.to_string(), dir.clone()));
+                }
+                workspace.build_scripts.push(script);
             }
-            workspace.build_scripts.push(script);
         }
         let mut paths: Vec<PathBuf> = key_values(&text, "path")
             .into_iter()
@@ -301,15 +303,17 @@ fn follow_path_dependencies(workspace: &mut Workspace) {
             let target = normalize(&path);
             if !target.is_dir() {
                 // A target path such as `src/lib.rs`. Outside the dependency's own directory,
-                // another package owns it, so a change there selects the full workspace.
-                let file = relative(&root, &target);
-                if !contains(&dir, &file) {
-                    let parent = file.rsplit_once('/').map_or("", |(parent, _)| parent);
-                    workspace
-                        .foreign_targets
-                        .push((parent.to_string(), dir.clone()));
+                // another package owns it, so a change there selects the full workspace. Rust
+                // finds modules beside the declared path, also when it is a link: keep both.
+                for file in declared_and_linked(&root, &path) {
+                    if !contains(&dir, &file) {
+                        let parent = file.rsplit_once('/').map_or("", |(parent, _)| parent);
+                        workspace
+                            .foreign_targets
+                            .push((parent.to_string(), dir.clone()));
+                    }
+                    workspace.foreign_files.push(file);
                 }
-                workspace.foreign_files.push(file);
                 continue;
             }
             let dir = relative(&root, &target);
@@ -335,6 +339,17 @@ fn follow_path_dependencies(workspace: &mut Workspace) {
     workspace.foreign = found.into_iter().collect();
     workspace.build_scripts.sort();
     workspace.build_scripts.dedup();
+}
+
+/// A target file as declared (links in its directories resolved) and the file behind it,
+/// relative to `root`: one entry when they are the same.
+fn declared_and_linked(root: &Path, path: &Path) -> Vec<String> {
+    let mut files = vec![
+        relative(root, &locate(path)),
+        relative(root, &normalize(path)),
+    ];
+    files.dedup();
+    files
 }
 
 /// True when a manifest inherits a value from its workspace (`workspace = true`).
