@@ -114,7 +114,8 @@ those against the selected packages.
    configuration files in the current directory, its parents and `CARGO_HOME` (as Cargo does), and
    from the files that those configuration files include.
 
-These changes select the full workspace:
+These changes select the full workspace. The built-in file names below match in any letter case,
+because a case-insensitive file system reads them so.
 
 - `Cargo.toml` and `Cargo.lock` at any depth, and the file behind a member manifest that is a symbolic
   link. A member manifest can change the features that Cargo unifies for other packages, so it counts
