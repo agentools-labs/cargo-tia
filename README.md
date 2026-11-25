@@ -133,9 +133,9 @@ These changes select the full workspace:
   `tests/`.
 - A file that matches a configured `full-run` glob.
 - Any case where git cannot give a single change set: a directory that git cannot read, no merge base
-  (for example in a shallow clone),
-  more than one merge base (criss-cross merges), an unknown base, no `origin/HEAD` and no `--base`, or no
-  repository.
+  (for example in a shallow clone), more than one merge base (criss-cross merges), in a shallow clone a
+  merge base that is neither of the two commits, an unknown base, no `origin/HEAD` and no `--base`, or
+  no repository.
 - A path dependency, local patch, `paths` override, target, build script, file that a non-member
   manifest names, symbolic link target, or file that a configuration file in the repository includes,
   outside the git repository, also through a path dependency
