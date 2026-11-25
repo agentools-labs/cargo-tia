@@ -4,7 +4,8 @@ Test impact analysis for Cargo workspaces. `cargo tia` finds the workspace packa
 affect and tests only those packages. When it cannot be sure, it tests the full workspace.
 
 It is a single binary with one dependency (`serde_json`). It reads the local git repository and
-`cargo metadata`. It makes no network calls and sends no telemetry.
+`cargo metadata`. It makes no network calls and sends no telemetry. (`cargo tia test` then runs a
+normal `cargo test`, which can download dependencies like any Cargo build.)
 
 ## Install
 
@@ -20,7 +21,7 @@ cargo install --locked --git https://github.com/agentools-labs/cargo-tia
 cargo tia                          # show the selection against the default branch of origin
 cargo tia --base origin/release    # compare with another branch
 cargo tia list --json              # the selection as JSON
-cargo tia args                     # print `-p a -p b`, or `--workspace`
+cargo tia args                     # print the cargo arguments for the selection
 cargo tia test -- --no-fail-fast   # run `cargo test` on the selection
 cargo tia nextest -- --profile ci  # run `cargo nextest run` on the selection
 ```
@@ -50,16 +51,23 @@ selected: full workspace, 10 packages
   because `pkg/brew/ripgrep-bin.rb` is outside every package
 ```
 
+The cargo arguments are `--workspace` for the full workspace. For a partial selection they are
+`--workspace` plus `--exclude NAME` for each package that is not selected. `-p NAME` is not used: it is
+ambiguous when a dependency has the same name and version as a member, which happens in real workspaces
+(tracing is one). `--exclude` matches workspace members only.
+
 With an empty selection, `test` and `nextest` run nothing and exit 0. `args` prints an empty line, so
 `cargo test $(cargo tia args)` then tests the default members. Use `cargo tia test` when you want to skip
-the run.
+the run. Arguments after `--` go to the test command. They must not change the packages: the tool
+rejects `-p`, `--package`, `--workspace`, `--exclude` and `--manifest-path` there.
 
 ## How it selects
 
-1. It finds the merge base of the base revision and `HEAD`. The default base is `origin/HEAD`, else
-   `origin/main`, else `origin/master`.
+1. It finds the merge base of the base revision and `HEAD`. The default base is `origin/HEAD`. When
+   `origin/HEAD` is not set, the tool does not guess a branch: pass `--base`.
 2. It lists the files that changed since the merge base. The list includes staged, unstaged and
-   untracked files. With `--committed`, it includes only committed changes.
+   untracked files, files marked assume-unchanged, and moved submodules, whatever the git
+   configuration hides. With `--committed`, it includes only committed changes.
 3. It reads the workspace with `cargo metadata --no-deps --offline`.
 4. It gives each changed file one effect, in this order:
    - **Full run**: the file matches a built-in or configured full-run glob, or it is a build script.
@@ -68,20 +76,28 @@ the run.
    - **Path dependency**: the file is in a path dependency that is not a member. The members that use
      it are changed.
    - **Outside**: the file is in no package. This selects the full workspace.
+
+   A changed file that a tracked symbolic link points to also changes the package that holds the link.
 5. It selects the changed packages and every member that depends on them, directly or through other
-   members. Normal, dev, build, optional and target-specific dependencies all count.
+   members. Normal, dev, build, optional and target-specific dependencies all count. A member that uses
+   a path dependency outside the workspace counts as a dependent of every member, because Cargo does
+   not report the dependencies of that path dependency.
 
 These changes select the full workspace:
 
-- `Cargo.toml` at the workspace root, and `Cargo.lock`.
+- `Cargo.toml` at any depth, and `Cargo.lock`. A member manifest can change the features that Cargo
+  unifies for other packages, so it counts as a workspace file.
 - `rust-toolchain`, `rust-toolchain.toml`, `.cargo/config` and `.cargo/config.toml`, at any depth.
 - `build.rs` at any depth, and each build script that `cargo metadata` reports.
 - A file outside every package, for example a root `README.md`, `.github/` or `scripts/`. A package at
   the workspace root owns only the top-level entries that hold its targets, such as `src/` and
   `tests/`.
 - A file that matches a configured `full-run` glob.
-- Any case where git cannot give the change set: no merge base (for example in a shallow clone), an
-  unknown base, or no repository.
+- Any case where git cannot give a single change set: no merge base (for example in a shallow clone),
+  more than one merge base (criss-cross merges), an unknown base, no `origin/HEAD` and no `--base`, or no
+  repository.
+- With `--committed`: an uncommitted change to a `Cargo.toml`. The tool reads the workspace from the
+  working tree, so the working tree must match `HEAD` there.
 
 A dependency on a registry package with the same name as a member also counts as an edge to that
 member, because `[patch]` can redirect it. This can select too much, never too little.
@@ -129,15 +145,16 @@ This repository uses the tool on itself in [its CI workflow](.github/workflows/c
 ## Limits
 
 - The unit of selection is a package. A selected package runs all of its tests.
-- The tool sees the inputs that Cargo declares. It does not see files that a package reads from another
-  package's directory (`include_str!("../../other/x")`, shared fixtures), environment variables,
-  services or external tools. Add shared inputs as `full-run` globs.
-- `cargo test -p a` unifies features across the selected packages only. A build can differ from the
-  `--workspace` build.
+- The tool sees the inputs that Cargo declares and the directory that holds each file. It does not see
+  files that a package reads from another package's directory (`include!`, `include_str!`,
+  `#[path = "../../other/x.rs"]`, shared fixtures), environment variables, services or external tools.
+  Add shared inputs as `full-run` globs.
+- A partial selection builds with the features of the selected packages only. A build can differ from
+  the `--workspace` build. Run the full workspace on the default branch to catch this.
 - Any `Cargo.lock` change selects the full workspace. The tool does not compare the lockfile per
   package.
-- `-p NAME` is ambiguous when a member and a registry dependency have the same name. Cargo then reports
-  an error.
+- With git older than 2.44, git can fetch missing objects in a partial clone. Newer git fails instead,
+  and the tool then selects the full workspace.
 - Windows is not tested.
 
 ## Measurements
@@ -146,13 +163,63 @@ MEASUREMENTS
 
 ## Alternatives
 
-ALTERNATIVES
+Checked on 2026-11-25 on crates.io, GitHub and docs.rs. A search of r/rust found no firsthand reports on
+these tools. The closest firsthand discussion is a Rust internals thread,
+[Cargo idea: only rerun tests in crates with changes](https://internals.rust-lang.org/t/cargo-idea-cli-option-to-only-rerun-tests-in-crates-with-changes/22108).
+The CircleCI article
+[Run fewer tests](https://circleci.com/blog/run-fewer-tests-speed-up-ci-smarter-testing/) (2026-10-22)
+describes the same idea for other languages: per-test coverage maps, plus "full test run paths" that
+always run every test. It names no Rust support.
+
+Package-level selection, like this tool:
+
+- [cargo-delta](https://github.com/tekian/cargo-delta) (MIT, 0.5.0, 2026-10, about 94,000 downloads).
+  Maintained, stable Rust. It parses Rust modules, `include_str!` and file-loading calls to map files
+  to packages, and it narrows `Cargo.lock` and root manifest changes. A changed file that its parser
+  does not map selects nothing, and its trip-wire list is empty by default. Its README asks for a
+  separate backstop build.
+- [haf-cargo-affected](https://github.com/huuff/cargo-affected) (WTFPL, 0.1.0, 2026-11). The design
+  closest to this tool: merge-base default, workspace files that select everything, all dependency
+  kinds, lockfile narrowing and JSON output. A file outside every crate that no rule matches is
+  ignored. It does not run tests. Its first release was two weeks old when checked.
+- [cargo-rail](https://github.com/loadingalias/cargo-rail) (MIT, 0.32.0, 2026-10, 232 stars).
+  Maintained. A large workspace engine (about 240,000 lines) with affected-work planning, a remote
+  compiler cache, releases and repository split. Conservative, but not simple.
+- [cargo-test-changed](https://github.com/felixpackard/cargo-test-changed) (MIT or Apache-2.0, 0.1.1,
+  2025-04). `--with-dependents` adds direct dependents only, not transitive ones, and workspace files
+  do not select everything. The last code change was in 2025-08.
+- [determinator](https://github.com/guppy-rs/guppy/tree/main/tools/determinator) (MIT or Apache-2.0,
+  0.13.0, 2026-10, part of guppy). Fail-safe rules: an unmatched path selects everything. It is a
+  library with no command-line tool, and it needs `cargo metadata` of both revisions.
+- [cargo-nextest](https://nexte.st/) filtersets such as `rdeps(name)` select the reverse dependencies
+  of given packages, and `--partition` splits a run across machines. Nextest does not find changed
+  packages.
+- [cargo-workspaces](https://github.com/pksunkara/cargo-workspaces) `changed` lists packages changed
+  since the last release tag, for versioning. It does not add dependents for testing.
+
+Per-test selection from coverage:
+
+- [cargo-difftests](https://github.com/dnbln/cargo-difftests) (Apache-2.0, 0.6.1, 2024-02). Needs
+  nightly Rust. No changes since 2024-05.
+- [cargo-affected](https://github.com/max-sixty/cargo-affected) (MIT or Apache-2.0, 0.4.1, 2026-09).
+  Per-test LLVM coverage on stable Rust with `llvm-tools` and nextest. Falls back to all tests when its
+  coverage data is stale. Its author marks it "extremely early" and says that CI should still run the
+  full suite.
+- [testtrim](https://codeberg.org/testtrim/testtrim) (GPL-3.0, 0.14.11, 2026-09). Coverage-based for
+  several languages, Rust included. It can share its database through PostgreSQL or a web service.
+- [cargo-impact](https://github.com/asmuelle/cargo-impact) (MIT or Apache-2.0, 0.5.0, 2026-05).
+  Delegates per-test mapping to cargo-difftests.
+
+No maintained tool combined a small, self-contained command with fail-safe defaults: select everything
+when a change is not understood. This tool fills that gap at the package level.
 
 ## Planned
 
 - A per-test tier: map tests to the source lines they run, from a periodic full run with coverage, and
   fall back to the package tier when the map is stale or missing. It is left out because it would more
   than double the code and needs instrumented builds.
+- Read the rustc dependency files (`target/*/deps/*.d`) of the last build to find the files that each
+  package compiles from other packages' directories (`include!`, `#[path]`).
 - Compare `Cargo.lock` per package, so that a dependency update selects only the packages that use the
   changed dependency.
 - Publish on crates.io.
