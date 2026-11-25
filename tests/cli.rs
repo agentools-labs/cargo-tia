@@ -990,6 +990,138 @@ fn args_keep_the_manifest_path() {
     );
 }
 
+#[test]
+fn root_package_test_under_a_member_selects_the_whole_workspace() {
+    let repo = Repo::new("roottest");
+    repo.write(
+        "Cargo.toml",
+        "[package]\nname = \"rootpkg\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+         [[test]]\nname = \"shared\"\npath = \"crates/helper/tests/shared.rs\"\n\n\
+         [workspace]\nmembers = [\"crates/helper\"]\n",
+    );
+    repo.write("src/lib.rs", "pub fn r() {}\n");
+    repo.write(
+        "crates/helper/Cargo.toml",
+        "[package]\nname = \"helper\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    repo.write("crates/helper/src/lib.rs", "pub fn h() {}\n");
+    repo.write("crates/helper/tests/shared.rs", "#[test] fn t() {}\n");
+    repo.commit("initial");
+    repo.append("crates/helper/tests/shared.rs", "// changed\n");
+    let json = repo.select("HEAD", &[]);
+    assert!(is_full(&json), "rootpkg runs this test: {json:#}");
+}
+
+/// lonely -> vendor/shim, not a member, with an optional dependency and build script line.
+fn with_shim(repo: &Repo, shim_dependency: &str, shim_build: &str) {
+    repo.write(
+        "vendor/shim/Cargo.toml",
+        &format!(
+            "[package]\nname = \"shim\"\nversion = \"0.1.0\"\nedition = \"2021\"\n{shim_build}\n\
+             [dependencies]\n{shim_dependency}\n"
+        ),
+    );
+    repo.write("vendor/shim/src/lib.rs", "pub fn s() {}\n");
+    repo.append("Cargo.toml", "exclude = [\"vendor\"]\n");
+    let manifest = fs::read_to_string(repo.path("crates/lonely/Cargo.toml")).unwrap();
+    repo.write(
+        "crates/lonely/Cargo.toml",
+        &manifest.replace(
+            "[dependencies]\n",
+            "[dependencies]\nshim = { path = \"../../vendor/shim\" }\n",
+        ),
+    );
+    repo.commit("shim");
+}
+
+#[test]
+fn path_dependency_of_a_path_dependency_outside_the_repository() {
+    let outside = Repo::new("outside-deep");
+    outside.write(
+        "Cargo.toml",
+        "[package]\nname = \"outer\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    outside.write("src/lib.rs", "pub fn o() {}\n");
+    let repo = chain();
+    with_shim(
+        &repo,
+        &format!(
+            "outer = {{ path = {:?} }}",
+            outside.dir.display().to_string()
+        ),
+        "",
+    );
+    let json = repo.select("HEAD", &[]);
+    assert!(is_full(&json), "{json:#}");
+    assert!(json["full_reasons"][0]
+        .as_str()
+        .unwrap()
+        .contains("outside the git repository"));
+}
+
+#[test]
+fn custom_build_script_of_a_path_dependency_selects_the_whole_workspace() {
+    let repo = chain();
+    with_shim(&repo, "", "build = \"generate.rs\"");
+    repo.write("vendor/shim/generate.rs", "fn main() {}\n");
+    repo.commit("generator");
+    repo.append("vendor/shim/generate.rs", "// changed\n");
+    let json = repo.select("HEAD", &[]);
+    assert!(is_full(&json), "{json:#}");
+    // Other shim files select the shim's users only.
+    repo.git(&["checkout", "-q", "--", "."]);
+    repo.append("vendor/shim/src/lib.rs", "// changed\n");
+    assert_eq!(selected(&repo.select("HEAD", &[])), ["lonely"]);
+}
+
+#[test]
+fn nested_path_dependency_changes_select_the_users() {
+    let repo = chain();
+    repo.write(
+        "vendor/inner/Cargo.toml",
+        "[package]\nname = \"inner\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    repo.write("vendor/inner/src/lib.rs", "pub fn i() {}\n");
+    with_shim(&repo, "inner = { path = \"../inner\" }", "");
+    repo.append("vendor/inner/src/lib.rs", "// changed\n");
+    let json = repo.select("HEAD", &[]);
+    assert!(!is_full(&json), "{json:#}");
+    assert_eq!(selected(&json), ["lonely"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn config_override_for_the_test_command_selects_the_whole_workspace() {
+    let repo = chain();
+    fs::write(
+        repo.path(".git/info/exclude"),
+        "fake-cargo.sh\ncargo-calls.log\n",
+    )
+    .unwrap();
+    let cargo = fake_cargo(&repo);
+    repo.append("crates/mid/src/lib.rs", "pub fn g() {}\n");
+    let output = isolated(Command::new(BIN))
+        .current_dir(&repo.dir)
+        .env("CARGO", &cargo)
+        .args([
+            "tia",
+            "test",
+            "--base",
+            "HEAD",
+            "--",
+            "--config",
+            "build.rustflags=['-Dwarnings']",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    let calls = fs::read_to_string(repo.path("cargo-calls.log")).unwrap();
+    assert_eq!(
+        calls,
+        "test --workspace --config build.rustflags=['-Dwarnings']\n"
+    );
+}
+
 /// A small deterministic generator, so the property test needs no extra crate.
 struct Rng(u64);
 

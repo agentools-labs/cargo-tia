@@ -8,7 +8,9 @@ For each of the last SELECT_COMMITS first-parent commits C, it records the selec
 it builds the workspace and runs its tests once untimed (the first run after a build does
 extra work), then times `cargo test --workspace --no-fail-fast` and
 `cargo test <selection> --no-fail-fast`, and records the packages with failing tests in
-each run. A package that fails in the full run but is not selected is a missed failure. A
+each run. Only the full run is warmed up: when the selection builds with other features, the
+selected run pays that compilation, as it would in CI with a cache from full builds. A
+package that fails in the full run but is not selected is a missed failure. A
 full run that fails to compile, or exits non-zero without naming a failing package, makes
 the commit inconclusive.
 Run it in a clean, disposable clone: it checks out each commit (detached) and then returns to
@@ -17,6 +19,7 @@ target directory.
 """
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -55,6 +58,10 @@ def cargo_test(args, cwd):
 
 def main():
     tia, repo, select_count, timed_count, out = sys.argv[1:6]
+    # Subprocesses run inside the measured repository, so make the given paths absolute.
+    if os.sep in tia:
+        tia = os.path.abspath(tia)
+    repo, out = os.path.abspath(repo), os.path.abspath(out)
     select_count, timed_count = int(select_count), int(timed_count)
     if run(["git", "status", "--porcelain"], repo).stdout.strip():
         raise SystemExit(f"{repo} has uncommitted changes; use a clean clone")

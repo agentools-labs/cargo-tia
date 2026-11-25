@@ -166,7 +166,7 @@ fn parse(args: Vec<OsString>) -> Result<Parsed, String> {
         let selects = matches!(
             flag,
             "--package" | "--workspace" | "--all" | "--exclude" | "--manifest-path"
-        ) || arg.starts_with("-p");
+        ) || short_package_flag(&arg);
         if selects {
             return Err(format!(
                 "`{arg}` after `--` would change the packages; pass --manifest-path before `--`"
@@ -174,6 +174,35 @@ fn parse(args: Vec<OsString>) -> Result<Parsed, String> {
         }
     }
     Ok(Parsed::Run(options))
+}
+
+/// True for a group of short flags that holds `-p`, such as `-p`, `-pfoo` or `-qp`. Letters
+/// after a flag that takes a value (`-j`, `-F`, `-Z`, `-C`) are that value.
+fn short_package_flag(arg: &str) -> bool {
+    let Some(group) = arg
+        .strip_prefix('-')
+        .filter(|group| !group.starts_with('-'))
+    else {
+        return false;
+    };
+    for flag in group.chars() {
+        match flag {
+            'p' => return true,
+            'j' | 'F' | 'Z' | 'C' => return false,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// A `--config` option for the test command can change patches and build settings that the
+/// selection reads.
+fn config_override(options: &Options) -> bool {
+    options
+        .passthrough
+        .iter()
+        .take_while(|arg| *arg != "--")
+        .any(|arg| arg == "--config" || arg.to_string_lossy().starts_with("--config="))
 }
 
 fn main() -> ExitCode {
@@ -212,6 +241,10 @@ fn main() -> ExitCode {
                     Some((dir, _)) => Selection::full(
                         &workspace,
                         format!("path dependency `{dir}` is outside the git repository"),
+                    ),
+                    None if config_override(&options) => Selection::full(
+                        &workspace,
+                        "`--config` after `--` can change the build".to_string(),
                     ),
                     None => select::select(
                         &workspace,
@@ -482,6 +515,8 @@ mod tests {
             "--committed",
         ]);
         assert_eq!(options.mode, Mode::List);
+        let grouped = parse_ok(&["test", "--", "-qj2", "-Fparallel", "-v"]);
+        assert_eq!(grouped.passthrough.len(), 3);
         let dashed = parse_ok(&["--ignore=-odd", "test", "--", "--release", "--", "-p"]);
         assert_eq!(dashed.rules.ignore, ["-odd"]);
         assert_eq!(dashed.passthrough.len(), 3);
@@ -504,6 +539,8 @@ mod tests {
             &["nextest", "--", "--manifest-path=../b/Cargo.toml"],
             &["test", "--", "--workspace"],
             &["test", "--", "--exclude", "x"],
+            &["test", "--", "-qp", "x"],
+            &["test", "--", "-vvp"],
             &["test", "list"],
             &["--bogus"],
         ] {

@@ -1,7 +1,7 @@
 //! Maps changed files to packages and selects their reverse dependency closure.
 
 use crate::glob;
-use crate::workspace::Workspace;
+use crate::workspace::{contains, Workspace};
 use std::collections::VecDeque;
 
 /// Files whose change can affect every package. Globs are relative to the workspace root.
@@ -9,7 +9,7 @@ use std::collections::VecDeque;
 /// packages.
 pub const FULL_RUN: &[&str] = &[
     "**/Cargo.toml",
-    "Cargo.lock",
+    "**/Cargo.lock",
     "**/rust-toolchain",
     "**/rust-toolchain.toml",
     "**/.cargo/config",
@@ -151,14 +151,6 @@ pub fn classify(workspace: &Workspace, rules: &Rules, path: &str) -> Effect {
     }
 }
 
-fn contains(dir: &str, path: &str) -> bool {
-    if dir.is_empty() {
-        return !path.starts_with("../") && path != "..";
-    }
-    path.strip_prefix(dir)
-        .is_some_and(|rest| rest.starts_with('/'))
-}
-
 /// Selects the changed packages and every package that depends on them, directly or not.
 /// Any file that is a full-run file or lies outside every package selects the full workspace.
 ///
@@ -176,20 +168,34 @@ pub fn select(
     let mut full_reasons = Vec::new();
     let mut changed = Vec::new();
     let mut classified = Vec::new();
-    // Targets are canonical, so one step through the links reaches every reader.
-    let mut reached: Vec<(String, Option<String>)> = Vec::new();
-    for path in files {
-        reached.push((path.clone(), None));
-        for (link, target) in symlinks {
-            if let Some(rest) = path.strip_prefix(target.as_str()) {
-                if rest.is_empty() || rest.starts_with('/') {
-                    reached.push((format!("{link}{rest}"), Some(path.clone())));
+    // Follow the links until no new path appears: a link can point to another link, and a
+    // target can be missing. Each round follows every link once, so the rounds are bounded.
+    let mut reached: Vec<(String, Option<String>)> =
+        files.iter().map(|path| (path.clone(), None)).collect();
+    let mut frontier = reached.clone();
+    for _ in 0..symlinks.len() {
+        let mut next = Vec::new();
+        for (path, origin) in &frontier {
+            for (link, target) in symlinks {
+                let Some(rest) = path.strip_prefix(target.as_str()) else {
+                    continue;
+                };
+                let via = format!("{link}{rest}");
+                let new = (rest.is_empty() || rest.starts_with('/'))
+                    && !reached.iter().any(|(known, _)| *known == via);
+                if new {
+                    let origin = origin.clone().unwrap_or_else(|| path.clone());
+                    reached.push((via.clone(), Some(origin.clone())));
+                    next.push((via, Some(origin)));
                 }
             }
         }
+        if next.is_empty() {
+            break;
+        }
+        frontier = next;
     }
     reached.sort();
-    reached.dedup_by(|a, b| a.0 == b.0);
     for (path, link_to) in reached {
         let effect = if special.contains(&path) {
             Effect::FullRun("is a symbolic link or a submodule".to_string())
@@ -368,6 +374,7 @@ mod tests {
             ".cargo/config.toml",
             "crates/app/.cargo/config",
             "crates/app/Cargo.toml",
+            "fuzz/Cargo.lock",
             "crates/app/build.rs",
             "crates/core/gen.rs",
             "ci/run.sh",
@@ -554,6 +561,39 @@ mod tests {
                 "{path}"
             );
         }
+    }
+
+    #[test]
+    fn chained_links_reach_every_reader() {
+        let ws = workspace();
+        // app/src/shared.rs -> mid/src/shared.rs -> core/src/shared.rs, which was deleted.
+        let links = [
+            (
+                "crates/app/src/shared.rs".to_string(),
+                "crates/mid/src/shared.rs".to_string(),
+            ),
+            (
+                "crates/mid/src/shared.rs".to_string(),
+                "crates/core/src/shared.rs".to_string(),
+            ),
+        ];
+        let changed = files(&["crates/core/src/shared.rs"]);
+        let selection = select(&ws, &Rules::default(), &changed, &links, &[]);
+        assert_eq!(names(&ws, &selection), ["app", "core", "mid"]);
+        let origins: Vec<_> = selection
+            .files
+            .iter()
+            .filter_map(|f| f.link_to.as_deref())
+            .collect();
+        assert_eq!(
+            origins,
+            ["crates/core/src/shared.rs", "crates/core/src/shared.rs"]
+        );
+        // A directory link inside its own target ends after one round per link.
+        let cycle = [("tools/tool/again".to_string(), "tools/tool".to_string())];
+        let changed = files(&["tools/tool/x.rs"]);
+        let selection = select(&ws, &Rules::default(), &changed, &cycle, &[]);
+        assert_eq!(selection.files.len(), 2);
     }
 
     #[test]

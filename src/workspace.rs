@@ -1,7 +1,7 @@
 //! The workspace model, read from `cargo metadata --no-deps`.
 
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::btree_map::{BTreeMap, Entry};
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
@@ -72,8 +72,44 @@ pub fn load(cargo: &OsStr, manifest_path: Option<&Path>) -> Result<Workspace, St
     let metadata: Value = serde_json::from_slice(&output.stdout)
         .map_err(|error| format!("cannot parse `cargo metadata` output: {error}"))?;
     let mut workspace = from_metadata(&metadata)?;
+    follow_path_dependencies(&mut workspace);
     workspace.patched = patched_members(&workspace);
     Ok(workspace)
+}
+
+/// Adds the path dependencies of non-member path dependencies, found by reading their
+/// manifests as text, and their custom build scripts. No-deps metadata lists neither.
+fn follow_path_dependencies(workspace: &mut Workspace) {
+    let root = workspace.root.clone();
+    let mut found: BTreeMap<String, Vec<usize>> = workspace.foreign.iter().cloned().collect();
+    let mut queue = workspace.foreign.clone();
+    while let Some((dir, users)) = queue.pop() {
+        let base = root.join(&dir);
+        let Ok(text) = std::fs::read_to_string(base.join("Cargo.toml")) else {
+            continue;
+        };
+        for script in key_values(&text, "build") {
+            let script = relative(&root, &normalize(&base.join(script)));
+            workspace.build_scripts.push(script);
+        }
+        for path in key_values(&text, "path") {
+            let target = normalize(&base.join(path));
+            if !target.is_dir() {
+                continue; // a target path such as `src/lib.rs`
+            }
+            let dir = relative(&root, &target);
+            if workspace.packages.iter().any(|package| package.dir == dir) {
+                continue; // a member: its users already depend on every member
+            }
+            if let Entry::Vacant(slot) = found.entry(dir.clone()) {
+                slot.insert(users.clone());
+                queue.push((dir, users.clone()));
+            }
+        }
+    }
+    workspace.foreign = found.into_iter().collect();
+    workspace.build_scripts.sort();
+    workspace.build_scripts.dedup();
 }
 
 /// The members that patch entries point to, from the workspace manifest and the Cargo
@@ -82,9 +118,13 @@ fn patched_members(workspace: &Workspace) -> Vec<usize> {
     let root = &workspace.root;
     // Each file with the directory that its relative paths start from.
     let mut files = vec![(root.join("Cargo.toml"), root.clone())];
-    for dir in root.ancestors() {
-        for name in [".cargo/config.toml", ".cargo/config"] {
-            files.push((dir.join(name), dir.to_path_buf()));
+    // Cargo reads configuration from the directory it runs in and its parents.
+    let cwd = std::env::current_dir().map(|cwd| normalize(&cwd)).ok();
+    for start in std::iter::once(root.as_path()).chain(cwd.as_deref()) {
+        for dir in start.ancestors() {
+            for name in [".cargo/config.toml", ".cargo/config"] {
+                files.push((dir.join(name), dir.to_path_buf()));
+            }
         }
     }
     let cargo_home = std::env::var_os("CARGO_HOME")
@@ -132,22 +172,31 @@ fn patch_paths(text: &str) -> Vec<String> {
         if line.starts_with('[') {
             in_table = is_patch;
         } else if in_table || is_patch {
-            paths.extend(path_values(line));
+            paths.extend(line_values(line, "path"));
         }
     }
     paths
 }
 
-/// The quoted values of `path = ...` keys in one line of TOML.
-fn path_values(line: &str) -> Vec<String> {
+/// The quoted values of `key = ...` in all lines of a TOML text, skipping comment lines.
+fn key_values(text: &str, key: &str) -> Vec<String> {
+    text.lines()
+        .map(|line| line.split(" #").next().unwrap_or_default().trim())
+        .filter(|line| !line.starts_with('#'))
+        .flat_map(|line| line_values(line, key))
+        .collect()
+}
+
+/// The quoted values of `key = ...` in one line of TOML.
+fn line_values(line: &str, key: &str) -> Vec<String> {
     let mut values = Vec::new();
     let mut rest = line;
-    while let Some(at) = rest.find("path") {
+    while let Some(at) = rest.find(key) {
         let whole_key = !rest[..at]
             .chars()
             .next_back()
             .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '-');
-        rest = &rest[at + 4..];
+        rest = &rest[at + key.len()..];
         let Some(value) = rest.trim_start().strip_prefix('=').map(str::trim_start) else {
             continue;
         };
@@ -219,13 +268,22 @@ pub fn from_metadata(metadata: &Value) -> Result<Workspace, String> {
             if is_build_script {
                 workspace.build_scripts.push(src.clone());
             }
-            let dir = &workspace.packages[index].dir;
             if is_root {
                 let entry = src.split('/').next().unwrap_or_default().to_string();
                 if !entry.is_empty() && !workspace.root_entries.contains(&entry) {
                     workspace.root_entries.push(entry);
                 }
-            } else if !src.starts_with(&format!("{dir}/")) {
+            }
+            // A target in a directory that another package owns: a change there must reach
+            // both packages.
+            let owner = workspace
+                .packages
+                .iter()
+                .enumerate()
+                .filter(|(_, package)| contains(&package.dir, &src))
+                .max_by_key(|(_, package)| package.dir.len())
+                .map(|(owner, _)| owner);
+            if owner != Some(index) {
                 let parent = src.rsplit_once('/').map_or("", |(parent, _)| parent);
                 let name = workspace.packages[index].name.clone();
                 workspace.cross_targets.push((parent.to_string(), name));
@@ -291,6 +349,16 @@ fn string_list(config: &Value, key: &str) -> Result<Vec<String>, String> {
             "`[workspace.metadata.tia] {key}` must be an array of strings"
         )),
     }
+}
+
+/// True when `path` lies in the directory `dir`; both are relative to the workspace root, and
+/// the empty `dir` is the root itself.
+pub fn contains(dir: &str, path: &str) -> bool {
+    if dir.is_empty() {
+        return !path.starts_with("../") && path != "..";
+    }
+    path.strip_prefix(dir)
+        .is_some_and(|rest| rest.starts_with('/'))
 }
 
 /// Resolves symbolic links when the path exists; otherwise removes `.` and `..` lexically.
@@ -429,6 +497,39 @@ mod tests {
             ws.cross_targets,
             [("fixtures/src".to_string(), "app".to_string())]
         );
+    }
+
+    #[test]
+    fn root_package_targets_under_a_member_are_recorded() {
+        let metadata = json!({
+            "workspace_root": "/nonexistent/ws",
+            "workspace_members": [
+                "path+file:///nonexistent/ws#root@0.1.0",
+                "path+file:///nonexistent/ws/crates/helper#helper@0.1.0",
+            ],
+            "packages": [
+                package("root", "/nonexistent/ws", vec![], vec![
+                    target("bin", "/nonexistent/ws/src/main.rs"),
+                    target("test", "/nonexistent/ws/crates/helper/tests/shared.rs"),
+                ]),
+                package("helper", "/nonexistent/ws/crates/helper", vec![], vec![
+                    target("lib", "/nonexistent/ws/crates/helper/src/lib.rs"),
+                ]),
+            ],
+        });
+        let ws = from_metadata(&metadata).unwrap();
+        assert_eq!(
+            ws.cross_targets,
+            [("crates/helper/tests".to_string(), "root".to_string())]
+        );
+    }
+
+    #[test]
+    fn reads_key_values() {
+        let text = "[package]\nbuild = \"gen.rs\" # custom\n# build = \"old.rs\"\nbuilder = \"x\"\n[build-dependencies]\nb = { path = '../b' }\n";
+        assert_eq!(key_values(text, "build"), ["gen.rs"]);
+        assert_eq!(key_values(text, "path"), ["../b"]);
+        assert!(key_values("[package]\nbuild = false", "build").is_empty());
     }
 
     #[test]
