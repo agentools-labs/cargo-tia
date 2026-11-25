@@ -813,19 +813,13 @@ mod tests {
                 deps: Vec::new(),
                 external: false,
             }],
-            foreign: vec![
-                ("../..".to_string(), vec![0]),
-                ("vendor".to_string(), vec![0]),
-            ],
+            foreign: vec![("../..".to_string(), vec![0]), ("v".to_string(), vec![0])],
             ..Workspace::default()
         };
         assert_eq!(ws.owner("ui/fixtures/case.json"), Some(Owner::Member(0)));
         assert_eq!(ws.owner("../other/x"), Some(Owner::PathDependency(0)));
-        // `vendor` is deeper than `../..`, although its name is shorter.
-        assert_eq!(
-            ws.owner("vendor/src/lib.rs"),
-            Some(Owner::PathDependency(1))
-        );
+        // `v` is deeper than `../..`, although its name is shorter.
+        assert_eq!(ws.owner("v/src/lib.rs"), Some(Owner::PathDependency(1)));
         assert_eq!(depth("../.."), -2);
         assert_eq!(depth("ui/fixtures"), 2);
     }
