@@ -34,14 +34,10 @@ pub struct Unknown {
 /// Without `base`, the base is `origin/HEAD`, the default branch of `origin`. Unless
 /// `committed_only` is set, the list includes staged, unstaged and untracked (not ignored)
 /// files, and files marked assume-unchanged.
-///
-/// `inputs` are more files, relative to the workspace root, that the tool read from the working
-/// tree (included Cargo configuration). With `committed_only`, they must match `HEAD`.
 pub fn changed_files(
     workspace_root: &Path,
     base: Option<&str>,
     committed_only: bool,
-    inputs: &[String],
 ) -> Result<Changes, Unknown> {
     let fail = |base: Option<&str>, reason: String| Unknown {
         base: base.map(str::to_string),
@@ -142,45 +138,44 @@ pub fn changed_files(
             hidden.then(|| path.to_string())
         })
         .collect();
-    // The inputs that the tool reads from the working tree: manifests and Cargo configuration.
-    let is_input = |path: &String| {
-        path.rsplit('/').next() == Some("Cargo.toml")
-            || path.split('/').any(|part| part == ".cargo")
-    };
+    // A submodule can hide edits from git in its own index: its contents are unknown then.
+    for entry in &index {
+        let Some((meta, path)) = entry.split_once('\t') else {
+            continue;
+        };
+        if meta.split(' ').nth(1) == Some("160000") && toplevel.join(path).join(".git").exists() {
+            let inner = git(&toplevel.join(path), &["ls-files", "-z", "-v"]).unwrap_or_default();
+            let hides = inner.split('\0').any(|entry| {
+                let tag = entry.split(' ').next().unwrap_or_default();
+                !tag.is_empty() && (tag.chars().all(|c| c.is_ascii_lowercase()) || tag == "S")
+            });
+            if hides {
+                hidden_links.push(path.to_string());
+            }
+        }
+    }
 
     let (mut paths, mut special);
     if committed_only {
         (paths, special) = diff(&[&merge_base, "HEAD"])?;
-        // The workspace graph comes from the working tree, so it must match HEAD.
-        let (mut dirty, mut dirty_links) = diff(&["HEAD"])?;
-        // Links are read from the working tree too, also where git hides them.
-        dirty_links.extend(hidden_links.iter().cloned());
-        if let Some(link) = dirty_links.first() {
-            return Err(fail(format!(
-                "`{link}` is a symbolic link or submodule with uncommitted changes"
-            )));
-        }
+        // The tool reads the workspace, its configuration and links from the working tree, so
+        // the working tree must match HEAD: tracked, untracked and hidden files alike.
+        let (dirty, _) = diff(&["HEAD"])?;
         let new_files = untracked()?;
-        if let Some(link) = new_files.iter().find(|path| {
-            path.ends_with('/')
-                || std::fs::symlink_metadata(toplevel.join(path)).is_ok_and(|m| m.is_symlink())
-        }) {
+        let differing = dirty
+            .first()
+            .or(new_files.first())
+            .or(hidden_links.first())
+            .cloned()
+            .or_else(|| {
+                hidden
+                    .iter()
+                    .find(|path| differs(&toplevel, "HEAD", path))
+                    .cloned()
+            });
+        if let Some(path) = differing {
             return Err(fail(format!(
-                "`{link}` is an untracked symbolic link or repository"
-            )));
-        }
-        dirty.extend(new_files);
-        dirty.extend(
-            hidden
-                .iter()
-                .filter(|path| differs(&toplevel, "HEAD", path))
-                .cloned(),
-        );
-        let root = normalize(workspace_root);
-        let read = |path: &String| inputs.contains(&relative(&root, &toplevel.join(path)));
-        if let Some(manifest) = dirty.iter().find(|path| is_input(path) || read(path)) {
-            return Err(fail(format!(
-                "`{manifest}` may have uncommitted changes, so the workspace may differ from HEAD"
+                "`{path}` differs from HEAD, and --committed needs a working tree that matches HEAD"
             )));
         }
     } else {
@@ -214,6 +209,8 @@ pub fn changed_files(
                 .into_iter()
                 .filter(|path| differs(&toplevel, &merge_base, path)),
         );
+        // Hidden links and submodules with hidden edits are changes of unknown effect.
+        paths.extend(hidden_links.iter().cloned());
         special.extend(hidden_links);
     }
 

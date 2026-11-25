@@ -406,14 +406,10 @@ fn overrides(workspace: &Workspace) -> Overrides {
                 None => others.push(dir),
             }
         }
+        // Any crate below a `paths` override directory can replace a registry package, with
+        // its own manifest and build script: a change there selects the full workspace.
         for path in recursive {
-            let dir = relative(root, &normalize(&base.join(path)));
-            patched.extend((0..workspace.packages.len()).filter(|&index| {
-                contains(&dir, &workspace.packages[index].dir)
-                    || workspace.packages[index].dir == dir
-            }));
-            // Crates below it that are not members can be overrides too.
-            others.push(dir);
+            sources.push(relative(root, &normalize(&base.join(path))));
         }
     }
     patched.sort_unstable();

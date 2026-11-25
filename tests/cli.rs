@@ -353,7 +353,13 @@ fn working_tree_changes_count_unless_committed_only() {
     let repo = chain();
     repo.write("crates/lonely/src/new.rs", "// untracked\n");
     assert_eq!(selected(&repo.select("HEAD", &[])), ["lonely"]);
-    assert!(selected(&repo.select("HEAD", &["--committed"])).is_empty());
+    // --committed needs a working tree that matches HEAD.
+    let json = repo.select("HEAD", &["--committed"]);
+    assert!(is_full(&json), "{json:#}");
+    assert!(json["full_reasons"][0]
+        .as_str()
+        .unwrap()
+        .contains("differs from HEAD"));
 
     repo.git(&["add", "crates/lonely/src/new.rs"]);
     assert_eq!(selected(&repo.select("HEAD", &[])), ["lonely"], "staged");
@@ -781,10 +787,12 @@ fn committed_only_needs_committed_manifests() {
     assert!(json["full_reasons"][0]
         .as_str()
         .unwrap()
-        .contains("uncommitted"));
-    // Other uncommitted files do not matter with --committed.
+        .contains("differs from HEAD"));
+    // Any other difference counts too; a clean working tree gives a partial selection.
     repo.git(&["checkout", "-q", "--", "."]);
     repo.write("notes.txt", "notes\n");
+    assert!(is_full(&repo.select("HEAD~1", &["--committed"])));
+    fs::remove_file(repo.path("notes.txt")).unwrap();
     let json = repo.select("HEAD~1", &["--committed"]);
     assert_eq!(selected(&json), ["app", "builder", "core", "mid", "tester"]);
 }
@@ -2269,6 +2277,60 @@ fn hidden_owner_execute_bit_changes_count() {
     ]);
     fs::set_permissions(&helper, fs::Permissions::from_mode(0o655)).unwrap();
     assert_eq!(selected(&repo.select("HEAD", &[])), ["lonely"]);
+}
+
+#[test]
+fn hidden_edits_inside_a_submodule_select_the_whole_workspace() {
+    let sub = Repo::new("sub-hidden");
+    sub.write("data.txt", "1\n");
+    sub.commit("data");
+    let repo = chain();
+    repo.git(&[
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        sub.dir.to_str().unwrap(),
+        "crates/lonely/vendor",
+    ]);
+    repo.commit("submodule");
+    let inner = Repo {
+        dir: repo.path("crates/lonely/vendor"),
+    };
+    inner.git(&["update-index", "--assume-unchanged", "data.txt"]);
+    inner.append("data.txt", "2\n");
+    let json = repo.select("HEAD", &[]);
+    assert!(is_full(&json), "{json:#}");
+}
+
+#[test]
+fn changes_below_a_paths_override_select_the_whole_workspace() {
+    let repo = chain();
+    repo.append("Cargo.toml", "exclude = [\"vendor\"]\n");
+    repo.write(".cargo/config.toml", "paths = [\"vendor\"]\n");
+    repo.write(
+        "vendor/uuid/Cargo.toml",
+        "[package]\nname = \"uuid\"\nversion = \"0.1.0\"\nedition = \"2021\"\nbuild = \"generate.rs\"\n",
+    );
+    repo.write("vendor/uuid/src/lib.rs", "pub fn u() {}\n");
+    repo.write("vendor/uuid/generate.rs", "fn main() {}\n");
+    repo.commit("override with a build script");
+    repo.append("vendor/uuid/generate.rs", "// changed\n");
+    assert!(is_full(&repo.select("HEAD", &[])));
+}
+
+#[cfg(unix)]
+#[test]
+fn committed_only_needs_the_linked_config_directory() {
+    let repo = chain();
+    repo.write("config/cargo/config.toml", "[build]\njobs = 2\n");
+    std::os::unix::fs::symlink("config/cargo", repo.path(".cargo")).unwrap();
+    repo.commit("linked .cargo");
+    repo.append("crates/core/src/lib.rs", "pub fn g() {}\n");
+    repo.commit("core");
+    fs::remove_dir_all(repo.path("config/cargo")).unwrap();
+    assert!(is_full(&repo.select("HEAD~1", &["--committed"])));
 }
 
 /// A small deterministic generator, so the property test needs no extra crate.

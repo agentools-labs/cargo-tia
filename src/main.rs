@@ -28,7 +28,7 @@ Usage:
 Options:
   --base REV             compare with the merge base of REV and HEAD
                          [default: origin/HEAD, the default branch of origin]
-  --committed            ignore uncommitted and untracked files
+  --committed            compare committed changes only; the working tree must match HEAD
   --manifest-path PATH   path to the workspace Cargo.toml
   --full-run GLOB        a changed file matching GLOB selects the full workspace (repeatable)
   --ignore GLOB          ignore changed files matching GLOB (repeatable)
@@ -246,69 +246,61 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let (base, selection) = match git::changed_files(
-        &workspace.root,
-        options.base.as_deref(),
-        options.committed,
-        &[
-            workspace.config_files.clone(),
-            workspace.manifest_targets.clone(),
-        ]
-        .concat(),
-    ) {
-        Ok(changes) => {
-            let mut selection = select::select(
-                &workspace,
-                &options.rules,
-                &changes.files,
-                &changes.symlinks,
-                &changes.special,
-            );
-            // Git cannot see changes outside the repository: in path dependencies, or in
-            // targets and build scripts declared there.
-            let repository = workspace::normalize(&workspace.root.join(&changes.repository));
-            let inputs = workspace
-                .foreign
-                .iter()
-                .map(|(dir, _)| dir)
-                .chain(workspace.targets.iter().map(|(src, _)| src))
-                .chain(&workspace.build_scripts)
-                .chain(&workspace.foreign_files)
-                .chain(&workspace.source_dirs)
-                .chain(changes.symlinks.iter().map(|(_, target)| target))
-                // An include from a configuration file in the repository. Configuration outside
-                // the repository, such as in CARGO_HOME, is environment.
-                .chain(
-                    workspace
-                        .config_includes
-                        .iter()
-                        .filter_map(|(included, from)| {
-                            let from = workspace::normalize(&workspace.root.join(from));
-                            from.starts_with(&repository).then_some(included)
-                        }),
+    let (base, selection) =
+        match git::changed_files(&workspace.root, options.base.as_deref(), options.committed) {
+            Ok(changes) => {
+                let mut selection = select::select(
+                    &workspace,
+                    &options.rules,
+                    &changes.files,
+                    &changes.symlinks,
+                    &changes.special,
                 );
-            for input in inputs {
-                if !workspace::normalize(&workspace.root.join(input)).starts_with(&repository) {
-                    let reason = format!("`{input}` is outside the git repository");
+                // Git cannot see changes outside the repository: in path dependencies, or in
+                // targets and build scripts declared there.
+                let repository = workspace::normalize(&workspace.root.join(&changes.repository));
+                let inputs = workspace
+                    .foreign
+                    .iter()
+                    .map(|(dir, _)| dir)
+                    .chain(workspace.targets.iter().map(|(src, _)| src))
+                    .chain(&workspace.build_scripts)
+                    .chain(&workspace.foreign_files)
+                    .chain(&workspace.source_dirs)
+                    .chain(changes.symlinks.iter().map(|(_, target)| target))
+                    // An include from a configuration file in the repository. Configuration outside
+                    // the repository, such as in CARGO_HOME, is environment.
+                    .chain(
+                        workspace
+                            .config_includes
+                            .iter()
+                            .filter_map(|(included, from)| {
+                                let from = workspace::normalize(&workspace.root.join(from));
+                                from.starts_with(&repository).then_some(included)
+                            }),
+                    );
+                for input in inputs {
+                    if !workspace::normalize(&workspace.root.join(input)).starts_with(&repository) {
+                        let reason = format!("`{input}` is outside the git repository");
+                        selection.make_full(&workspace, reason);
+                    }
+                }
+                for dir in &workspace.unresolved {
+                    let reason = format!("cannot find the workspace that `{dir}` inherits from");
                     selection.make_full(&workspace, reason);
                 }
+                if config_override(&options) {
+                    let reason =
+                        "a configuration option after `--` can change every package".to_string();
+                    selection.make_full(&workspace, reason);
+                }
+                (Base::Known(changes.base, changes.merge_base), selection)
             }
-            for dir in &workspace.unresolved {
-                let reason = format!("cannot find the workspace that `{dir}` inherits from");
-                selection.make_full(&workspace, reason);
+            Err(unknown) => {
+                let selection = Selection::full(&workspace, unknown.reason);
+                (Base::Unknown(unknown.base), selection)
             }
-            if config_override(&options) {
-                let reason =
-                    "a configuration option after `--` can change every package".to_string();
-                selection.make_full(&workspace, reason);
-            }
-            (Base::Known(changes.base, changes.merge_base), selection)
-        }
-        Err(unknown) => {
-            let selection = Selection::full(&workspace, unknown.reason);
-            (Base::Unknown(unknown.base), selection)
-        }
-    };
+        };
 
     match options.mode {
         Mode::List if options.json => {

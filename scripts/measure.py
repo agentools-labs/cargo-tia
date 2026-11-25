@@ -66,6 +66,9 @@ def main():
     if os.sep in tia:
         tia = os.path.abspath(tia)
     repo, out = os.path.abspath(repo), os.path.abspath(out)
+    # The clone is cleaned between commits: the tool must live elsewhere.
+    if os.path.abspath(tia).startswith(repo + os.sep):
+        raise SystemExit("build or install cargo-tia outside the measured clone")
     select_count, timed_count = int(select_count), int(timed_count)
     if run(["git", "status", "--porcelain"], repo).stdout.strip():
         raise SystemExit(f"{repo} has uncommitted changes; use a clean clone")

@@ -79,7 +79,7 @@ Arguments after `--` go to the test command. They must not change the packages: 
    checkout, a missing skip-worktree file counts as deleted. Git configuration
    such as `diff.ignoreSubmodules`, `core.fsmonitor`, `core.fileMode`, `core.ignoreCase`,
    `core.trustctime` or `core.checkStat` cannot hide a change. With `--committed`, the list includes only
-   committed changes.
+   committed changes, and the working tree must match `HEAD`.
 3. It reads the workspace with `cargo metadata --no-deps --offline`.
 4. It gives each changed file one effect, in this order:
    - **Full run**: the file matches a built-in or configured full-run glob, or it is a build script.
@@ -104,9 +104,7 @@ Arguments after `--` go to the test command. They must not change the packages: 
    - When a `[patch]` or `[replace]` entry points to a member, every member with registry or git
      dependencies depends on that member: those dependencies can depend on it. A local patch path
      that is not a member counts as every member, and it is a path dependency of each member with
-     registry or git dependencies. Cargo `paths` overrides count the same way, for every member below
-     the override directory, and the override directory counts as a local patch path, also when it
-     is a member.
+     registry or git dependencies.
 
    The tool reads patches and overrides as text from the workspace manifest, from the Cargo
    configuration files in the workspace root, the current directory, their parents and `CARGO_HOME`,
@@ -124,8 +122,8 @@ These changes select the full workspace:
   is unknown.
 - A Cargo configuration file that the tool reads, also behind a symbolic link or in a `CARGO_HOME`
   inside the repository, and the files that it includes.
-- A file in a source replacement directory (`directory` or `local-registry` in Cargo configuration).
-  Any member can use the registry packages there.
+- A file in a source replacement directory (`directory` or `local-registry` in Cargo configuration)
+  or in a Cargo `paths` override directory. Any member can use the packages there.
 - A file in a directory that holds a target of another package, for example
   `[[test]] path = "../other/check.rs"`. This includes targets of the root package below a member,
   and files that a non-member path dependency compiles from another package's directory.
@@ -143,10 +141,8 @@ These changes select the full workspace:
   of a path dependency. Git cannot see changes there.
 - A non-member path dependency that inherits dependencies from a workspace manifest that the tool
   cannot find.
-- With `--committed`: a `Cargo.toml`, a file in a `.cargo` directory, an included configuration file,
-  a symbolic link or a submodule with uncommitted changes, or one that git hides with assume-unchanged
-  or skip-worktree. The tool reads the workspace from the working tree, so the
-  working tree must match `HEAD` there.
+- With `--committed`: any difference between the working tree and `HEAD` (tracked, untracked or hidden
+  files). The tool reads the workspace, its configuration and links from the working tree.
 
 A dependency on a registry package with the same name as a member also counts as an edge to that
 member, because `[patch]` can redirect it. This can select too much, never too little.
