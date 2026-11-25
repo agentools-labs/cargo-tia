@@ -94,6 +94,13 @@ def main():
     select_count, timed_count = int(select_count), int(timed_count)
     if run(["git", "status", "--porcelain", "--untracked-files=all"], repo).stdout.strip():
         raise SystemExit(f"{repo} has uncommitted changes; use a clean clone")
+    # Git keeps local edits in assume-unchanged or skip-worktree files through checkouts, and
+    # status does not show them: the replay would measure those edits.
+    hidden = [line for line in run(["git", "ls-files", "-v"], repo).stdout.splitlines()
+              if line[:1].islower() or line[:1] == "S"]
+    if hidden:
+        raise SystemExit(f"{repo} has files marked assume-unchanged or skip-worktree, such as "
+                         f"{hidden[0][2:]}; use a clean clone")
     # Checking out old commits would leave submodules at other revisions.
     if any(line.startswith("160000 ") for line in run(["git", "ls-files", "-s"], repo).stdout.splitlines()):
         raise SystemExit(f"{repo} has submodules, which this script does not replay")

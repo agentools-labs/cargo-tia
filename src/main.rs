@@ -394,7 +394,7 @@ fn main() -> ExitCode {
             return emit(&format!("cargo-tia {}\n", env!("CARGO_PKG_VERSION")));
         }
         Err(error) => {
-            eprintln!("error: {error}");
+            say(&format!("error: {error}"));
             return ExitCode::from(2);
         }
     };
@@ -402,7 +402,7 @@ fn main() -> ExitCode {
     let workspace = match workspace::load(&cargo, options.manifest_path.as_deref()) {
         Ok(workspace) => workspace,
         Err(error) => {
-            eprintln!("error: {error}");
+            say(&format!("error: {error}"));
             return ExitCode::from(2);
         }
     };
@@ -489,9 +489,10 @@ fn main() -> ExitCode {
         )),
         Mode::Test | Mode::Nextest => {
             // The report is information: a closed stderr must not stop the run.
-            let _ = std::io::stderr().write_all(report(&workspace, &base, &selection).as_bytes());
+            let report = report(&workspace, &base, &selection);
+            say(report.strip_suffix('\n').unwrap_or(&report));
             if selection.packages.is_empty() {
-                eprintln!("no package is affected; nothing to run");
+                say("no package is affected; nothing to run");
                 return ExitCode::SUCCESS;
             }
             let subcommand: &[&str] = if options.mode == Mode::Test {
@@ -523,10 +524,15 @@ fn run(cargo: &OsStr, subcommand: &[&str], selection: &[String], extra: &[OsStri
         Ok(status) if status.success() => ExitCode::SUCCESS,
         Ok(status) => ExitCode::from(failure_code(status)),
         Err(error) => {
-            eprintln!("error: cannot run cargo: {error}");
+            say(&format!("error: cannot run cargo: {error}"));
             ExitCode::from(2)
         }
     }
+}
+
+/// Writes a line to stderr. A closed stderr loses the message but does not end the program.
+fn say(text: &str) {
+    let _ = std::io::stderr().write_all(format!("{text}\n").as_bytes());
 }
 
 /// Writes the output to stdout. A reader that closes the pipe early, such as `head`, ends it
@@ -540,7 +546,7 @@ fn emit(text: &str) -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("error: cannot write the output: {error}");
+            say(&format!("error: cannot write the output: {error}"));
             ExitCode::from(2)
         }
     }

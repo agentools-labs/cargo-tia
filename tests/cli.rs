@@ -3124,6 +3124,28 @@ fn a_reader_that_closes_the_pipe_early_ends_the_output_quietly() {
     }
 }
 
+#[test]
+fn a_closed_stderr_does_not_change_the_exit_status() {
+    let repo = chain();
+    let run = |args: &[&str]| {
+        // A pipe whose read end is closed before the run: every write to stderr fails.
+        let (reader, writer) = std::io::pipe().unwrap();
+        drop(reader);
+        let status = isolated(Command::new(BIN))
+            .current_dir(&repo.dir)
+            .args(args)
+            .stdout(std::process::Stdio::null())
+            .stderr(writer)
+            .status()
+            .unwrap();
+        status.code()
+    };
+    // The report and the empty-selection message go to stderr.
+    assert_eq!(run(&["tia", "test", "--base", "HEAD"]), Some(0));
+    // An error message goes to stderr: the status stays 2.
+    assert_eq!(run(&["tia", "list", "--no-such-option"]), Some(2));
+}
+
 #[cfg(unix)]
 #[test]
 fn a_signal_that_ends_cargo_gives_the_shell_status() {
