@@ -74,7 +74,8 @@ workspace.
 1. It finds the merge base of the base revision and `HEAD`. The default base is `origin/HEAD`. When
    `origin/HEAD` is not set, the tool does not guess a branch: pass `--base`.
 2. It lists the files that changed since the merge base. The list includes staged, unstaged and
-   untracked files, and edits to files marked assume-unchanged or skip-worktree. Git configuration
+   untracked files, and edits to files marked assume-unchanged or skip-worktree. Without a sparse
+   checkout, a missing skip-worktree file counts as deleted. Git configuration
    such as `diff.ignoreSubmodules` or `core.fsmonitor` cannot hide a change. With `--committed`, the list includes only
    committed changes.
 3. It reads the workspace with `cargo metadata --no-deps --offline`.
@@ -119,8 +120,9 @@ These changes select the full workspace:
 - Any case where git cannot give a single change set: no merge base (for example in a shallow clone),
   more than one merge base (criss-cross merges), an unknown base, no `origin/HEAD` and no `--base`, or no
   repository.
-- A path dependency, local patch, `paths` override, target or build script outside the git repository,
-  also as a path dependency of a path dependency. Git cannot see changes there.
+- A path dependency, local patch, `paths` override, target, build script, file that a non-member
+  manifest names, or symbolic link target outside the git repository, also through a path dependency
+  of a path dependency. Git cannot see changes there.
 - With `--committed`: a `Cargo.toml` with uncommitted changes, or one that git hides with
   assume-unchanged or skip-worktree. The tool reads the workspace from the working tree, so the
   working tree must match `HEAD` there.
