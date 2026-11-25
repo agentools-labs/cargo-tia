@@ -12,6 +12,7 @@ mod workspace;
 use select::{Effect, Reason, Rules, Selection};
 use serde_json::{json, Value};
 use std::ffi::{OsStr, OsString};
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
 use workspace::Workspace;
@@ -387,12 +388,10 @@ fn main() -> ExitCode {
     let options = match parse(std::env::args_os().skip(1).collect()) {
         Ok(Parsed::Run(options)) => options,
         Ok(Parsed::Help) => {
-            print!("{HELP}");
-            return ExitCode::SUCCESS;
+            return emit(HELP);
         }
         Ok(Parsed::Version) => {
-            println!("cargo-tia {}", env!("CARGO_PKG_VERSION"));
-            return ExitCode::SUCCESS;
+            return emit(&format!("cargo-tia {}\n", env!("CARGO_PKG_VERSION")));
         }
         Err(error) => {
             eprintln!("error: {error}");
@@ -479,20 +478,18 @@ fn main() -> ExitCode {
         };
 
     match options.mode {
-        Mode::List if options.json => {
-            println!("{:#}", to_json(&workspace, &base, &selection, &options));
-            ExitCode::SUCCESS
-        }
-        Mode::List => {
-            print!("{}", report(&workspace, &base, &selection));
-            ExitCode::SUCCESS
-        }
-        Mode::Args => {
-            println!("{}", cargo_args(&workspace, &selection, &options).join(" "));
-            ExitCode::SUCCESS
-        }
+        Mode::List if options.json => emit(&format!(
+            "{:#}\n",
+            to_json(&workspace, &base, &selection, &options)
+        )),
+        Mode::List => emit(&report(&workspace, &base, &selection)),
+        Mode::Args => emit(&format!(
+            "{}\n",
+            cargo_args(&workspace, &selection, &options).join(" ")
+        )),
         Mode::Test | Mode::Nextest => {
-            eprint!("{}", report(&workspace, &base, &selection));
+            // The report is information: a closed stderr must not stop the run.
+            let _ = std::io::stderr().write_all(report(&workspace, &base, &selection).as_bytes());
             if selection.packages.is_empty() {
                 eprintln!("no package is affected; nothing to run");
                 return ExitCode::SUCCESS;
@@ -527,6 +524,23 @@ fn run(cargo: &OsStr, subcommand: &[&str], selection: &[String], extra: &[OsStri
         Ok(status) => ExitCode::from(failure_code(status)),
         Err(error) => {
             eprintln!("error: cannot run cargo: {error}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+/// Writes the output to stdout. A reader that closes the pipe early, such as `head`, ends it
+/// quietly. Any other write error is an error.
+fn emit(text: &str) -> ExitCode {
+    let mut stdout = std::io::stdout().lock();
+    match stdout
+        .write_all(text.as_bytes())
+        .and_then(|()| stdout.flush())
+    {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: cannot write the output: {error}");
             ExitCode::from(2)
         }
     }

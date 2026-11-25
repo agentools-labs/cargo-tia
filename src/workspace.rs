@@ -174,7 +174,7 @@ fn add_nested_users(workspace: &mut Workspace) {
     }
     for (source_dir, declarer) in &source_dirs {
         for (dir, users) in &mut workspace.foreign {
-            if contains(source_dir, dir) && !users.contains(declarer) {
+            if (dir == source_dir || contains(source_dir, dir)) && !users.contains(declarer) {
                 users.push(*declarer);
                 users.sort_unstable();
             }

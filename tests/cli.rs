@@ -1905,6 +1905,32 @@ fn crate_inside_a_member_source_directory_that_another_member_uses() {
 }
 
 #[test]
+fn deleted_test_in_a_discovery_directory_that_is_a_non_member_crate() {
+    let repo = chain();
+    repo.write(
+        "Cargo.toml",
+        "[workspace]\nresolver = \"2\"\nmembers = [\"crates/*\"]\nexclude = [\"crates/app/tests\"]\n",
+    );
+    // crates/app/tests is app's test directory and also a fixtures crate that lonely uses.
+    repo.write("crates/app/tests/smoke.rs", "#[test] fn smoke() {}\n");
+    vendor_crate(&repo, "crates/app/tests", &[]);
+    let manifest = fs::read_to_string(repo.path("crates/lonely/Cargo.toml")).unwrap();
+    repo.write(
+        "crates/lonely/Cargo.toml",
+        &manifest.replace(
+            "[dependencies]\n",
+            "[dependencies]\ntests = { path = \"../app/tests\" }\n",
+        ),
+    );
+    repo.commit("fixtures crate");
+    // Metadata no longer shows the deleted test: only the directory links it to app.
+    fs::remove_file(repo.path("crates/app/tests/smoke.rs")).unwrap();
+    let json = repo.select("HEAD", &[]);
+    assert_eq!(json["workspace_packages"], 6, "{json:#}");
+    assert_eq!(selected(&json), ["app", "lonely"], "{json:#}");
+}
+
+#[test]
 fn committed_only_distrusts_included_configuration() {
     let repo = chain();
     repo.write(".cargo/config.toml", "include = [\"../ci/patches.toml\"]\n");
@@ -3061,6 +3087,41 @@ fn a_member_at_a_target_discovery_directory() {
     fs::remove_file(repo.path("app/tests/smoke.rs")).unwrap();
     let json = repo.select("HEAD", &[]);
     assert!(selected(&json).contains(&"app".to_string()), "{json:#}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_reader_that_closes_the_pipe_early_ends_the_output_quietly() {
+    use std::io::Read;
+    use std::process::Stdio;
+    let repo = chain();
+    // Enough files that the report does not fit in a pipe buffer.
+    for i in 0..400 {
+        repo.write(&format!("crates/lonely/src/f{i:03}.rs"), "\n");
+    }
+    for args in [
+        &["tia", "list", "--base", "HEAD"][..],
+        &["tia", "list", "--json", "--base", "HEAD"][..],
+    ] {
+        let mut child = isolated(Command::new(BIN))
+            .current_dir(&repo.dir)
+            .args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut first = [0u8; 16];
+        child.stdout.take().unwrap().read_exact(&mut first).unwrap();
+        // The read end is closed now.
+        let output = child.wait_with_output().unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{args:?}: {}",
+            stderr(&output)
+        );
+        assert!(!stderr(&output).contains("panicked"), "{}", stderr(&output));
+    }
 }
 
 #[cfg(unix)]
