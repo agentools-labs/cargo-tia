@@ -1138,10 +1138,25 @@ fn config_override_for_the_test_command_selects_the_whole_workspace() {
         .output()
         .unwrap();
     assert!(output.status.success(), "{}", stderr(&output));
+    let output = isolated(Command::new(BIN))
+        .current_dir(&repo.dir)
+        .env("CARGO", &cargo)
+        .args([
+            "tia",
+            "nextest",
+            "--base",
+            "HEAD",
+            "--",
+            "--config-file=ci/nextest.toml",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
     let calls = fs::read_to_string(repo.path("cargo-calls.log")).unwrap();
     assert_eq!(
         calls,
-        "test --workspace --config build.rustflags=['-Dwarnings']\n"
+        "test --workspace --config build.rustflags=['-Dwarnings']\n\
+         nextest run --workspace --config-file=ci/nextest.toml\n"
     );
 }
 
@@ -1605,6 +1620,43 @@ fn paths_in_included_config_files_start_from_their_own_directory() {
     repo.append("crates/lonely/vendor/widget/src/lib.rs", "// changed\n");
     let json = repo.select("HEAD", &[]);
     assert!(is_full(&json), "{json:#}");
+}
+
+#[test]
+fn included_config_outside_the_repository_selects_the_whole_workspace() {
+    let outside = Repo::new("outside-config");
+    outside.write("settings.toml", "[env]\nX = \"1\"\n");
+    let repo = chain();
+    repo.write(
+        ".cargo/config.toml",
+        &format!(
+            "include = [{:?}]\n",
+            outside.path("settings.toml").display().to_string()
+        ),
+    );
+    repo.commit("shared settings");
+    let json = repo.select("HEAD", &[]);
+    assert!(is_full(&json), "{json:#}");
+}
+
+#[cfg(unix)]
+#[test]
+fn unreadable_directories_select_the_whole_workspace() {
+    use std::os::unix::fs::PermissionsExt;
+    let repo = chain();
+    let locked = repo.path("crates/lonely/data");
+    fs::create_dir_all(&locked).unwrap();
+    fs::write(locked.join("input.txt"), "data\n").unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    let readable = fs::read_dir(&locked).is_ok(); // true when the tests run as root
+    let json = repo.select("HEAD", &[]);
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+    if !readable {
+        assert!(
+            is_full(&json),
+            "git cannot list the untracked files: {json:#}"
+        );
+    }
 }
 
 /// A small deterministic generator, so the property test needs no extra crate.

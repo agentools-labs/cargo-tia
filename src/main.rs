@@ -197,14 +197,18 @@ fn short_selection_flag(arg: &str) -> bool {
     false
 }
 
-/// A `--config` option for the test command can change patches and build settings that the
-/// selection reads.
+/// A configuration option for the test command can change settings for every package: Cargo's
+/// `--config`, and nextest's `--config-file` and `--tool-config-file`.
 fn config_override(options: &Options) -> bool {
     options
         .passthrough
         .iter()
         .take_while(|arg| *arg != "--")
-        .any(|arg| arg == "--config" || arg.to_string_lossy().starts_with("--config="))
+        .any(|arg| {
+            let arg = arg.to_string_lossy();
+            let flag = arg.split_once('=').map_or(&*arg, |(flag, _)| flag);
+            matches!(flag, "--config" | "--config-file" | "--tool-config-file")
+        })
 }
 
 fn main() -> ExitCode {
@@ -252,6 +256,7 @@ fn main() -> ExitCode {
                     .chain(&workspace.build_scripts)
                     .chain(&workspace.foreign_files)
                     .chain(&workspace.source_dirs)
+                    .chain(&workspace.config_files)
                     .chain(changes.symlinks.iter().map(|(_, target)| target));
                 for input in inputs {
                     if !workspace::normalize(&workspace.root.join(input)).starts_with(&repository) {
@@ -264,7 +269,8 @@ fn main() -> ExitCode {
                     selection.make_full(&workspace, reason);
                 }
                 if config_override(&options) {
-                    let reason = "`--config` after `--` can change the build".to_string();
+                    let reason =
+                        "a configuration option after `--` can change every package".to_string();
                     selection.make_full(&workspace, reason);
                 }
                 (Base::Known(changes.base, changes.merge_base), selection)

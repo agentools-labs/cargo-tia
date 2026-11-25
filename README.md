@@ -66,8 +66,8 @@ the run. `args` separates arguments with spaces, so for a manifest path that hol
 
 Arguments after `--` go to the test command. They must not change the packages: the tool rejects
 `-p` and `-m` (also in a group such as `-qp`), `--package`, `--workspace`, `--exclude` and
-`--manifest-path` there. A `--config` option there can change patches and build settings, so it selects the full
-workspace.
+`--manifest-path` there. A configuration option there (Cargo's `--config`, nextest's `--config-file` or
+`--tool-config-file`) can change every package, so it selects the full workspace.
 
 ## How it selects
 
@@ -122,11 +122,12 @@ These changes select the full workspace:
   the workspace root owns only the top-level entries that hold its targets, such as `src/` and
   `tests/`.
 - A file that matches a configured `full-run` glob.
-- Any case where git cannot give a single change set: no merge base (for example in a shallow clone),
+- Any case where git cannot give a single change set: a directory that git cannot read, no merge base
+  (for example in a shallow clone),
   more than one merge base (criss-cross merges), an unknown base, no `origin/HEAD` and no `--base`, or no
   repository.
-- A path dependency, local patch, `paths` override, target, build script, file that a non-member
-  manifest names, or symbolic link target outside the git repository, also through a path dependency
+- A path dependency, local patch, `paths` override, included configuration file, target, build
+  script, file that a non-member manifest names, or symbolic link target outside the git repository, also through a path dependency
   of a path dependency. Git cannot see changes there.
 - A non-member path dependency that inherits dependencies from a workspace manifest that the tool
   cannot find.
@@ -182,7 +183,8 @@ This repository uses the tool on itself in [its CI workflow](.github/workflows/c
 ## Limits
 
 - The unit of selection is a package. With `cargo tia test`, a selected package runs all of its tests.
-  Nextest does not run doctests, so with `cargo tia nextest` also run `cargo tia test -- --doc`.
+  Nextest does not run doctests, so with `cargo tia nextest` also run `cargo tia test -- --doc`
+  when the selection holds a library (Cargo rejects `--doc` for binaries only).
 - The tool sees the inputs that Cargo declares and the directory that holds each file. It does not see
   files that a package reads from another package's directory (`include!`, `include_str!`,
   `#[path = "../../other/x.rs"]`, shared fixtures), environment variables, services or external tools.
