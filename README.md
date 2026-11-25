@@ -287,7 +287,7 @@ and that time counts against the selection.
 | Workspace | Commits (partial) | Full runs | Selected runs | Saved | Saved on partial commits |
 |---|---|---|---|---|---|
 | ripgrep | 10 (3) | 46.5 s | 37.5 s | 19% | 65% |
-| tracing | 8 (6) | 175.7 s | 157.3 s | 10% | 14% |
+| tracing | 8 (6) | 172.6 s | 158.0 s | 8% | 11% |
 | rust-analyzer | 5 (3) | 94.4 s | 91.0 s | 4% | 6% |
 
 In tracing and rust-analyzer, most changes reach the central packages, whose tests take most of the
