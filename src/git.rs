@@ -152,7 +152,13 @@ pub fn changed_files(
     if committed_only {
         (paths, special) = diff(&[&merge_base, "HEAD"])?;
         // The workspace graph comes from the working tree, so it must match HEAD.
-        let (mut dirty, _) = diff(&["HEAD"])?;
+        let (mut dirty, dirty_links) = diff(&["HEAD"])?;
+        // Links are read from the working tree too.
+        if let Some(link) = dirty_links.first() {
+            return Err(fail(format!(
+                "`{link}` is a symbolic link or submodule with uncommitted changes"
+            )));
+        }
         dirty.extend(untracked()?);
         dirty.extend(hidden.iter().cloned());
         let root = normalize(workspace_root);
@@ -242,6 +248,8 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
         // case-insensitive file system, a case-only rename shows only with ignoreCase off.
         .args(["-c", "core.fsmonitor=false", "-c", "core.fileMode=true"])
         .args(["-c", "core.ignoreCase=false"])
+        // Weaker stat checks can hide an edit that keeps the size and modification time.
+        .args(["-c", "core.trustctime=true", "-c", "core.checkStat=default"])
         .args(args)
         // A partial clone must not fetch missing objects: the command fails instead.
         // GIT_NO_LAZY_FETCH needs git 2.45; denying every transport covers older versions.

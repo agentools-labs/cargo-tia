@@ -138,8 +138,18 @@ pub fn classify(workspace: &Workspace, rules: &Rules, path: &str) -> Effect {
 
     match workspace.owner(path) {
         None => Effect::Outside,
-        Some(Owner::PathDependency(index)) => {
-            Effect::PathDependency(workspace.foreign[index].1.clone())
+        // Path dependencies can nest (a `paths` override directory holds crates that members
+        // also use directly): the users of every one that holds the file count.
+        Some(Owner::PathDependency(_)) => {
+            let mut users: Vec<usize> = workspace
+                .foreign
+                .iter()
+                .filter(|(dir, _)| crate::workspace::contains(dir, path))
+                .flat_map(|(_, users)| users.iter().copied())
+                .collect();
+            users.sort_unstable();
+            users.dedup();
+            Effect::PathDependency(users)
         }
         Some(Owner::Member(index)) if !workspace.packages[index].dir.is_empty() => {
             Effect::Package(index)
@@ -486,6 +496,26 @@ mod tests {
             &[],
         );
         assert_eq!(names(&ws, &selection), ["tool"]);
+    }
+
+    #[test]
+    fn nested_path_dependencies_merge_their_users() {
+        let mut ws = workspace();
+        ws.foreign = vec![
+            ("vendor".to_string(), vec![0]),
+            ("vendor/uuid".to_string(), vec![3]),
+        ];
+        let selection = select(
+            &ws,
+            &Rules::default(),
+            &files(&["vendor/uuid/src/lib.rs"]),
+            &[],
+            &[],
+        );
+        assert_eq!(
+            selection.files[0].effect,
+            Effect::PathDependency(vec![0, 3])
+        );
     }
 
     #[test]

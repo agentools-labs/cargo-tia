@@ -1838,6 +1838,42 @@ fn committed_only_distrusts_included_configuration() {
     assert!(is_full(&json), "{json:#}");
 }
 
+#[cfg(unix)]
+#[test]
+fn committed_only_distrusts_changed_links() {
+    let repo = chain();
+    std::os::unix::fs::symlink(
+        "../../core/src/lib.rs",
+        repo.path("crates/lonely/src/core.rs"),
+    )
+    .unwrap();
+    repo.commit("link");
+    repo.append("crates/core/src/lib.rs", "pub fn g() {}\n");
+    repo.commit("core");
+    fs::remove_file(repo.path("crates/lonely/src/core.rs")).unwrap();
+    let json = repo.select("HEAD~1", &["--committed"]);
+    assert!(is_full(&json), "{json:#}");
+}
+
+#[test]
+fn weak_stat_settings_cannot_hide_edits() {
+    let repo = chain();
+    repo.git(&["config", "core.trustctime", "false"]);
+    repo.git(&["config", "core.checkStat", "minimal"]);
+    let path = repo.path("crates/lonely/src/lib.rs");
+    let before = fs::metadata(&path).unwrap().modified().unwrap();
+    let text = fs::read_to_string(&path).unwrap();
+    // Same size, same modification time, other bytes.
+    fs::write(&path, text.replace('1', "2")).unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(before)
+        .unwrap();
+    assert_eq!(selected(&repo.select("HEAD", &[])), ["lonely"]);
+}
+
 /// A small deterministic generator, so the property test needs no extra crate.
 struct Rng(u64);
 
