@@ -21,6 +21,7 @@ target directory.
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -63,8 +64,7 @@ def cargo_test(args, cwd):
 def main():
     tia, repo, select_count, timed_count, out = sys.argv[1:6]
     # Subprocesses run inside the measured repository, so make the given paths absolute.
-    if os.sep in tia:
-        tia = os.path.abspath(tia)
+    tia = os.path.abspath(tia) if os.sep in tia else (shutil.which(tia) or tia)
     repo, out = os.path.abspath(repo), os.path.abspath(out)
     # The clone is cleaned between commits: the tool must live elsewhere.
     if os.path.abspath(tia).startswith(repo + os.sep):

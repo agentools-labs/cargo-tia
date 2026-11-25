@@ -84,7 +84,8 @@ Arguments after `--` go to the test command. They must not change the packages: 
 4. It gives each changed file one effect, in this order:
    - **Full run**: the file matches a built-in or configured full-run glob, or it is a build script.
    - **Ignored**: the file matches an ignore glob.
-   - **Package**: the file is in the directory of a workspace member. The deepest member wins.
+   - **Package**: the file is in the directory of a workspace member. The deepest member wins, and
+     a non-member path dependency wins when its directory is deeper.
    - **Path dependency**: the file is in a path dependency that is not a member, or in a path
      dependency of such a dependency. The tool reads those manifests as text to find them, with the
      dependencies that they inherit (`workspace = true`) from their own workspace manifest. The

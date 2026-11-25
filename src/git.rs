@@ -138,20 +138,14 @@ pub fn changed_files(
             hidden.then(|| path.to_string())
         })
         .collect();
-    // A submodule can hide edits from git in its own index: its contents are unknown then.
+    // A submodule can hide edits from the outer diff: in its own index, through its own
+    // `ignore` settings, or in nested submodules. Check each initialized one, recursively.
     for entry in &index {
         let Some((meta, path)) = entry.split_once('\t') else {
             continue;
         };
-        if meta.split(' ').nth(1) == Some("160000") && toplevel.join(path).join(".git").exists() {
-            let inner = git(&toplevel.join(path), &["ls-files", "-z", "-v"]).unwrap_or_default();
-            let hides = inner.split('\0').any(|entry| {
-                let tag = entry.split(' ').next().unwrap_or_default();
-                !tag.is_empty() && (tag.chars().all(|c| c.is_ascii_lowercase()) || tag == "S")
-            });
-            if hides {
-                hidden_links.push(path.to_string());
-            }
+        if meta.split(' ').nth(1) == Some("160000") && submodule_unknown(&toplevel.join(path)) {
+            hidden_links.push(path.to_string());
         }
     }
 
@@ -252,6 +246,38 @@ pub fn changed_files(
         symlinks,
         repository: relative(&root, &toplevel),
     })
+}
+
+/// True when an initialized submodule, or one nested in it, has changes or files that git
+/// hides. An uninitialized one is environment: false.
+fn submodule_unknown(dir: &Path) -> bool {
+    if !dir.join(".git").exists() {
+        return false;
+    }
+    let status = git(
+        dir,
+        &["status", "--porcelain", "-z", "--ignore-submodules=none"],
+    );
+    let index = git(dir, &["ls-files", "-z", "-v", "-s"]);
+    let (Ok(status), Ok(index)) = (status, index) else {
+        return true;
+    };
+    if !status.is_empty() {
+        return true;
+    }
+    index
+        .split('\0')
+        .filter(|entry| !entry.is_empty())
+        .any(|entry| {
+            let Some((meta, path)) = entry.split_once('\t') else {
+                return true;
+            };
+            let mut fields = meta.split(' ');
+            let tag = fields.next().unwrap_or_default();
+            let mode = fields.next().unwrap_or_default();
+            let hidden = tag.chars().all(|c| c.is_ascii_lowercase()) || tag == "S";
+            hidden || (mode == "160000" && submodule_unknown(&dir.join(path)))
+        })
 }
 
 /// For a file that git hides (assume-unchanged or skip-worktree): true unless its working-tree

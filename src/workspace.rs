@@ -585,7 +585,14 @@ pub fn from_metadata(metadata: &Value) -> Result<Workspace, String> {
             let Some(src) = target["src_path"].as_str() else {
                 continue;
             };
-            let src = relative(&root, &normalize(Path::new(src)));
+            // Rust finds the modules of a target beside the path that Cargo names, also when
+            // that path is a symbolic link: keep it, and track the file behind it too.
+            let declared = locate(Path::new(src));
+            let linked = normalize(Path::new(src));
+            let src = relative(&root, &declared);
+            if linked != declared {
+                workspace.targets.push((relative(&root, &linked), index));
+            }
             let is_build_script = target["kind"]
                 .as_array()
                 .is_some_and(|kinds| kinds.iter().any(|kind| kind == "custom-build"));
@@ -708,6 +715,15 @@ pub fn normalize(path: &Path) -> PathBuf {
             Err(_) => path,
         },
         _ => path,
+    }
+}
+
+/// Resolves the links of the directories in a path but not of its last part.
+pub fn locate(path: &Path) -> PathBuf {
+    let path = lexical(path);
+    match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) => normalize(parent).join(name),
+        _ => normalize(&path),
     }
 }
 

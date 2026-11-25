@@ -2338,6 +2338,86 @@ fn committed_only_needs_the_linked_config_directory() {
     assert!(is_full(&repo.select("HEAD~1", &["--committed"])));
 }
 
+#[cfg(unix)]
+#[test]
+fn modules_beside_a_linked_target() {
+    let repo = chain();
+    repo.write(
+        "crates/app/support/entry.rs",
+        "mod helper;\n#[test] fn t() {}\n",
+    );
+    fs::create_dir_all(repo.path("crates/lonely/smoke")).unwrap();
+    std::os::unix::fs::symlink(
+        "../../app/support/entry.rs",
+        repo.path("crates/lonely/smoke/entry.rs"),
+    )
+    .unwrap();
+    // Rust finds `helper` beside the declared path, in lonely's directory.
+    repo.write("crates/lonely/smoke/helper.rs", "pub fn h() {}\n");
+    let app = fs::read_to_string(repo.path("crates/app/Cargo.toml")).unwrap();
+    repo.write(
+        "crates/app/Cargo.toml",
+        &(app + "\n[[test]]\nname = \"smoke\"\npath = \"../lonely/smoke/entry.rs\"\n"),
+    );
+    repo.commit("linked test entry");
+    repo.append("crates/lonely/smoke/helper.rs", "// changed\n");
+    let json = repo.select("HEAD", &[]);
+    assert!(is_full(&json), "app compiles helper.rs: {json:#}");
+}
+
+#[test]
+fn nested_submodule_changes_count() {
+    let leaf = Repo::new("leaf");
+    leaf.write("lib.rs", "pub fn l() {}\n");
+    leaf.commit("leaf");
+    let middle = Repo::new("middle");
+    middle.write("readme.txt", "middle\n");
+    middle.git(&[
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        leaf.dir.to_str().unwrap(),
+        "leaf",
+    ]);
+    middle.git(&[
+        "config",
+        "-f",
+        ".gitmodules",
+        "submodule.leaf.ignore",
+        "dirty",
+    ]);
+    middle.commit("middle with leaf");
+    let repo = chain();
+    repo.git(&[
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        middle.dir.to_str().unwrap(),
+        "crates/lonely/vendor",
+    ]);
+    repo.git(&[
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "update",
+        "-q",
+        "--init",
+        "--recursive",
+    ]);
+    repo.commit("nested submodules");
+    // middle ignores dirty content of leaf, so only a recursive check sees this edit.
+    let leaf_in_repo = Repo {
+        dir: repo.path("crates/lonely/vendor/leaf"),
+    };
+    leaf_in_repo.append("lib.rs", "// changed\n");
+    let json = repo.select("HEAD", &[]);
+    assert!(is_full(&json), "{json:#}");
+}
+
 /// A small deterministic generator, so the property test needs no extra crate.
 struct Rng(u64);
 
