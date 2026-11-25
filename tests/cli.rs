@@ -1257,13 +1257,18 @@ fn use_vendor_crate(repo: &Repo, member: &str, name: &str) {
 fn shared_nested_path_dependency_selects_every_user() {
     let repo = chain();
     repo.append("Cargo.toml", "exclude = [\"vendor\"]\n");
-    vendor_crate(&repo, "vendor/common", &[]);
+    // one and two share common, and common uses base: base must reach both users.
+    vendor_crate(&repo, "vendor/base", &[]);
+    vendor_crate(&repo, "vendor/common", &["../base"]);
     vendor_crate(&repo, "vendor/one", &["../common"]);
     vendor_crate(&repo, "vendor/two", &["../common"]);
     use_vendor_crate(&repo, "lonely", "one");
     use_vendor_crate(&repo, "builder", "two");
     repo.commit("vendored crates");
     repo.append("vendor/common/src/lib.rs", "// changed\n");
+    assert_eq!(selected(&repo.select("HEAD", &[])), ["builder", "lonely"]);
+    repo.git(&["checkout", "-q", "--", "."]);
+    repo.append("vendor/base/src/lib.rs", "// changed\n");
     assert_eq!(selected(&repo.select("HEAD", &[])), ["builder", "lonely"]);
 }
 
