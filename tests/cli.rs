@@ -666,7 +666,7 @@ fn test_and_nextest_run_the_selection() {
     assert_eq!(
         calls,
         "test --workspace --exclude builder --exclude core --exclude lonely --exclude tester --no-fail-fast\n\
-         nextest run --workspace --exclude builder --exclude core --exclude lonely --exclude tester --profile ci\n\
+         nextest run --workspace --exclude builder --exclude core --exclude lonely --exclude tester --no-tests=pass --profile ci\n\
          nextest run --workspace\n"
     );
 }
@@ -2979,6 +2979,37 @@ fn a_shadowed_config_toml_is_not_read() {
     // A change to either file still selects the full workspace.
     repo.append(".cargo/config.toml", "\n");
     assert!(is_full(&repo.select("HEAD", &[])));
+}
+
+#[test]
+fn an_explicit_include_is_read_even_beside_a_legacy_config() {
+    let repo = chain();
+    repo.write(
+        ".cargo/config.toml",
+        "include = [\"../crates/lonely/ci/config.toml\"]\n",
+    );
+    repo.write("crates/lonely/ci/config", "[build]\njobs = 2\n");
+    repo.write(
+        "crates/lonely/ci/config.toml",
+        "include = [\"settings.toml\"]\n",
+    );
+    repo.write("crates/lonely/ci/settings.toml", "[env]\nX = \"1\"\n");
+    repo.commit("include beside a legacy config");
+    repo.write("crates/lonely/ci/settings.toml", "[env]\nX = \"2\"\n");
+    let json = repo.select("HEAD", &[]);
+    assert!(
+        is_full(&json),
+        "settings.toml is a Cargo configuration file: {json:#}"
+    );
+}
+
+#[test]
+fn a_merge_base_with_a_warning_selects_the_whole_workspace() {
+    let repo = chain();
+    repo.append("crates/lonely/src/lib.rs", "// changed\n");
+    // The fresh reflog does not reach a year back: git warns and answers with HEAD.
+    let json = repo.select("HEAD@{1.year.ago}", &[]);
+    assert!(is_full(&json), "{json:#}");
 }
 
 /// A small deterministic generator, so the property test needs no extra crate.

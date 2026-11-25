@@ -4,7 +4,8 @@ Test impact analysis for Cargo workspaces. `cargo tia` finds the workspace packa
 affect and tests only those packages. When it cannot be sure, it tests the full workspace.
 
 It is a single binary with one dependency (`serde_json`). It reads the local git repository and
-`cargo metadata`. It makes no network calls and sends no telemetry. (`cargo tia test` then runs a
+`cargo metadata`, and does not write to the repository (git runs without optional locks, so it does not
+refresh the index). It makes no network calls and sends no telemetry. (`cargo tia test` then runs a
 normal `cargo test`, which can download dependencies like any Cargo build.)
 
 ## Install
@@ -59,7 +60,9 @@ The cargo arguments are `--workspace` for the full workspace. For a partial sele
 ambiguous when a dependency has the same name and version as a member, which happens in real workspaces
 (tracing is one). `--exclude` matches workspace members only.
 
-With an empty selection, `test` and `nextest` run nothing and exit 0. `args` prints an empty line, so
+With an empty selection, `test` and `nextest` run nothing and exit 0. For a partial selection,
+`nextest` adds `--no-tests=pass`, because the selected packages can hold no tests while the workspace
+has them; pass your own `--no-tests` after `--` to change that. `args` prints an empty line, so
 `cargo test $(cargo tia args)` then tests the default members. Use `cargo tia test` when you want to skip
 the run. `args` separates arguments with spaces, so for a manifest path that holds spaces, read the
 `cargo_args` array of `cargo tia list --json` instead.

@@ -389,6 +389,7 @@ fn overrides(workspace: &Workspace) -> Overrides {
     let (mut patched, mut others, mut sources) = (Vec::new(), Vec::new(), Vec::new());
     let (mut config_files, mut includes) = (Vec::new(), Vec::new());
     let mut seen = std::collections::BTreeSet::new();
+    let mut included_files: Vec<PathBuf> = Vec::new();
     while let Some((file, base)) = files.pop() {
         if !seen.insert(file.clone()) {
             continue;
@@ -399,7 +400,9 @@ fn overrides(workspace: &Workspace) -> Overrides {
             config_files.push(relative(root, &normalize(&file)));
         }
         // When both exist, Cargo reads `.cargo/config` and not `.cargo/config.toml`.
-        let shadowed = file.file_name().is_some_and(|name| name == "config.toml")
+        // Only in Cargo's directory search: an include names its file exactly.
+        let shadowed = !included_files.contains(&file)
+            && file.file_name().is_some_and(|name| name == "config.toml")
             && file.with_file_name("config").is_file();
         if shadowed {
             continue;
@@ -424,6 +427,7 @@ fn overrides(workspace: &Workspace) -> Overrides {
                     .and_then(Path::parent)
                     .unwrap_or(root)
                     .to_path_buf();
+                included_files.push(included.clone());
                 files.push((included, included_base));
             }
             for key in ["directory", "local-registry"] {

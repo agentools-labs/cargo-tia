@@ -484,12 +484,17 @@ fn main() -> ExitCode {
             } else {
                 &["nextest", "run"]
             };
-            run(
-                &cargo,
-                subcommand,
-                &cargo_args(&workspace, &selection, &options),
-                &options.passthrough,
-            )
+            let mut arguments = cargo_args(&workspace, &selection, &options);
+            // Nextest fails when a run has no tests. A partial selection can hold no tests while
+            // the workspace has them, so accept that unless the caller chose a policy.
+            let policy = options
+                .passthrough
+                .iter()
+                .any(|arg| arg.to_string_lossy().starts_with("--no-tests"));
+            if options.mode == Mode::Nextest && !selection.is_full() && !policy {
+                arguments.push("--no-tests=pass".to_string());
+            }
+            run(&cargo, subcommand, &arguments, &options.passthrough)
         }
     }
 }

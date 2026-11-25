@@ -422,11 +422,16 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
         // GIT_NO_LAZY_FETCH needs git 2.45; denying every transport covers older versions.
         .env("GIT_NO_LAZY_FETCH", "1")
         .env("GIT_ALLOW_PROTOCOL", "none")
+        // Selection only reads: no index refresh written as a side effect.
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .output()
         .map_err(|error| format!("cannot run git: {error}"))?;
     // Git skips a directory that it cannot read with only a warning. The untracked files are
     // then unknown.
-    let scans = args.contains(&"--others") || args.first() == Some(&"status");
+    // A merge base with a warning (an old reflog date, say) is not the asked one.
+    let scans = args.contains(&"--others")
+        || args.first() == Some(&"status")
+        || args.first() == Some(&"merge-base");
     // An ambiguous name (a branch and a tag) only warns: the revision is then unknown.
     let ambiguous = String::from_utf8_lossy(&output.stderr).contains("ambiguous");
     if output.status.success() && (scans && !output.stderr.is_empty() || ambiguous) {
