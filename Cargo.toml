@@ -2,6 +2,7 @@
 name = "cargo-tia"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.87"
 description = "Test impact analysis for Cargo workspaces: test only the packages a change can affect"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/agentools-labs/cargo-tia"

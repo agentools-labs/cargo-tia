@@ -189,6 +189,12 @@ def main():
             run(["git", "reset", "-q", "--hard"], top)
             run(["git", "clean", "-ffdxq"], top)
             run(["git", "checkout", "-q", "--detach", commit], top)
+            # In a larger repository, the workspace can be added or moved later.
+            if not os.path.isdir(repo):
+                row = {"commit": commit, "error": "the workspace directory does not exist here"}
+                rows.append(row)
+                print(json.dumps(row), flush=True)
+                continue
             listing = run(["git", "ls-files", "-s"], top).stdout.splitlines()
             if any(line.startswith("160000 ") for line in listing):
                 row = {"commit": commit, "error": "submodules at this commit are not replayed"}

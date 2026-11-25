@@ -31,6 +31,17 @@ jobs:
       - name: Test the measurement script's parsers
         run: python3 scripts/test_measure.py
 
+  msrv:
+    name: test on the minimum Rust version (1.87)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust 1.87
+        run: |
+          rustup toolchain install 1.87 --profile minimal
+          rustup default 1.87
+      - run: cargo test --locked
+
   self:
     name: cargo tia on its own changes
     runs-on: ubuntu-latest

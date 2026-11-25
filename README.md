@@ -15,7 +15,7 @@ normal `cargo test`, which can download dependencies like any Cargo build.)
 cargo install --locked --git https://github.com/agentools-labs/cargo-tia
 ```
 
-`git` and `cargo` must be on `PATH`. Linux and macOS are supported.
+It needs Rust 1.87 or newer. `git` and `cargo` must be on `PATH`. Linux and macOS are supported.
 
 ## Use
 

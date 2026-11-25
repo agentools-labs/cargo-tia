@@ -2294,7 +2294,19 @@ fn deleted_optional_include_selects_the_whole_workspace() {
     repo.write("crates/lonely/test-env.toml", "[env]\nMODE = \"fast\"\n");
     repo.commit("optional include");
     fs::remove_file(repo.path("crates/lonely/test-env.toml")).unwrap();
-    let json = repo.select("HEAD", &[]);
+    let output = repo.tia(&["tia", "list", "--json", "--base", "HEAD"]);
+    // A Cargo older than the table form of `include` cannot read this configuration: the tool
+    // stops with Cargo's error.
+    if !output.status.success() {
+        assert!(
+            stderr(&output).contains("could not load Cargo configuration"),
+            "{}",
+            stderr(&output)
+        );
+        assert_eq!(output.status.code(), Some(2));
+        return;
+    }
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert!(is_full(&json), "{json:#}");
 }
 

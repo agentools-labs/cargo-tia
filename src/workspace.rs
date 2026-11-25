@@ -778,6 +778,22 @@ pub fn from_metadata(metadata: &Value) -> Result<Workspace, String> {
     mark_cross_targets(&mut workspace);
 
     let config = &metadata["metadata"]["tia"];
+    // A misspelled or misshapen configuration would silently drop its rules.
+    match config {
+        Value::Null => {}
+        Value::Object(table) => {
+            if let Some(key) = table
+                .keys()
+                .find(|key| !matches!(key.as_str(), "full-run" | "ignore"))
+            {
+                return Err(format!(
+                    "`[workspace.metadata.tia]` has an unknown key `{key}`; the keys are \
+                     `full-run` and `ignore`"
+                ));
+            }
+        }
+        _ => return Err("`workspace.metadata.tia` must be a table".to_string()),
+    }
     workspace.full_run = string_list(config, "full-run")?;
     workspace.ignore = string_list(config, "ignore")?;
     Ok(workspace)
@@ -1198,5 +1214,18 @@ mod tests {
         });
         let error = from_metadata(&metadata).unwrap_err();
         assert!(error.contains("ignore"), "{error}");
+        for (tia, expected) in [
+            (json!(["crates/schema/**"]), "must be a table"),
+            (json!({"full_run": ["ci/**"]}), "unknown key `full_run`"),
+        ] {
+            let metadata = json!({
+                "workspace_root": "/nonexistent/ws",
+                "workspace_members": [],
+                "packages": [],
+                "metadata": {"tia": tia},
+            });
+            let error = from_metadata(&metadata).unwrap_err();
+            assert!(error.contains(expected), "{error}");
+        }
     }
 }
