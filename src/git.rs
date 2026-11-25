@@ -228,8 +228,10 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
         .arg("-C")
         .arg(dir)
         // A file system monitor hook can run any program and can report stale results.
-        // A change of the executable bit can change a test, so always compare it.
+        // A change of the executable bit can change a test, so always compare it. On a
+        // case-insensitive file system, a case-only rename shows only with ignoreCase off.
         .args(["-c", "core.fsmonitor=false", "-c", "core.fileMode=true"])
+        .args(["-c", "core.ignoreCase=false"])
         .args(args)
         // A partial clone must not fetch missing objects: the command fails instead.
         // GIT_NO_LAZY_FETCH needs git 2.45; denying every transport covers older versions.

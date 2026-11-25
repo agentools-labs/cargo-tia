@@ -1730,6 +1730,21 @@ fn named_workspace_of_a_path_dependency() {
         .contains("outside the git repository"));
 }
 
+#[test]
+fn case_only_renames_count() {
+    let repo = chain();
+    repo.write("crates/lonely/src/worker.rs", "// worker\n");
+    repo.commit("worker");
+    // On a case-insensitive file system git hides this rename unless ignoreCase is off.
+    repo.git(&["config", "core.ignoreCase", "true"]);
+    fs::rename(
+        repo.path("crates/lonely/src/worker.rs"),
+        repo.path("crates/lonely/src/Worker.rs"),
+    )
+    .unwrap();
+    assert_eq!(selected(&repo.select("HEAD", &[])), ["lonely"]);
+}
+
 /// A small deterministic generator, so the property test needs no extra crate.
 struct Rng(u64);
 

@@ -76,7 +76,8 @@ Arguments after `--` go to the test command. They must not change the packages: 
 2. It lists the files that changed since the merge base. The list includes staged, unstaged and
    untracked files, and edits to files marked assume-unchanged or skip-worktree. Without a sparse
    checkout, a missing skip-worktree file counts as deleted. Git configuration
-   such as `diff.ignoreSubmodules`, `core.fsmonitor` or `core.fileMode` cannot hide a change. With `--committed`, the list includes only
+   such as `diff.ignoreSubmodules`, `core.fsmonitor`, `core.fileMode` or `core.ignoreCase` cannot hide
+   a change. With `--committed`, the list includes only
    committed changes.
 3. It reads the workspace with `cargo metadata --no-deps --offline`.
 4. It gives each changed file one effect, in this order:
@@ -203,6 +204,10 @@ This repository uses the tool on itself in [its CI workflow](.github/workflows/c
 - In a partial clone, git 2.45 and newer cannot fetch missing objects for the tool: the command fails
   and the tool selects the full workspace. Older git also gets no transport, through
   `GIT_ALLOW_PROTOCOL`.
+- The compared tree is the git repository that holds the workspace. Files outside it are environment,
+  the same for the base and the change: Cargo configuration in a parent directory or in `CARGO_HOME`,
+  and submodules that are not checked out. The tool reads that configuration for patches, but does not
+  see changes to it. Run the full workspace after you change the environment.
 - Run the tool as `cargo tia`: Cargo then gives it the path of its own binary. Run directly as
   `cargo-tia`, it calls `cargo` through rustup, and rustup older than 1.28 can download a missing
   toolchain that the workspace pins.

@@ -177,8 +177,9 @@ fn parse(args: Vec<OsString>) -> Result<Parsed, String> {
 }
 
 /// True for a group of short flags that holds `-p` (package) or `-m` (manifest path), such as
-/// `-p`, `-pfoo`, `-qp` or `-m`. Letters after a flag that takes a value (`-j`, `-F`, `-Z`,
-/// `-C`, and the nextest options `-E` and `-P`) are that value.
+/// `-p`, `-pfoo`, `-qp` or `-m`. Only flags without a value (`-q`, `-v`, `-r`, `-h`, `-V`) can
+/// come before them in a group: any other letter takes the rest of the group as its value, as
+/// in `-j2`, `-Fparallel` or nextest's `-Etest(smoke)`.
 fn short_selection_flag(arg: &str) -> bool {
     let Some(group) = arg
         .strip_prefix('-')
@@ -189,9 +190,8 @@ fn short_selection_flag(arg: &str) -> bool {
     for flag in group.chars() {
         match flag {
             'p' | 'm' => return true,
-            // `=` starts a value, as in `-P=ci`.
-            'j' | 'F' | 'Z' | 'C' | 'E' | 'P' | '=' => return false,
-            _ => {}
+            'q' | 'v' | 'r' | 'h' | 'V' => {}
+            _ => return false,
         }
     }
     false
@@ -536,8 +536,15 @@ mod tests {
         assert_eq!(options.mode, Mode::List);
         let grouped = parse_ok(&["test", "--", "-qj2", "-Fparallel", "-v"]);
         assert_eq!(grouped.passthrough.len(), 3);
-        let filtered = parse_ok(&["nextest", "--", "-Etest(smoke)", "-P=pre-merge", "-Pci"]);
-        assert_eq!(filtered.passthrough.len(), 3);
+        let filtered = parse_ok(&[
+            "nextest",
+            "--",
+            "-Etest(smoke)",
+            "-P=pre-merge",
+            "-Pci",
+            "-Rprevious.zip",
+        ]);
+        assert_eq!(filtered.passthrough.len(), 4);
         let dashed = parse_ok(&["--ignore=-odd", "test", "--", "--release", "--", "-p"]);
         assert_eq!(dashed.rules.ignore, ["-odd"]);
         assert_eq!(dashed.passthrough.len(), 3);
