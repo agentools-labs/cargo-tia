@@ -73,6 +73,9 @@ def main():
     rows = []
     try:
         for index, commit in enumerate(commits):
+            # A build can rewrite a tracked Cargo.lock or leave a generated one behind.
+            run(["git", "reset", "-q", "--hard"], repo)
+            run(["git", "clean", "-fdxq", "--", "Cargo.lock"], repo)
             run(["git", "checkout", "-q", "--detach", commit], repo)
             started = time.monotonic()
             listed = run(
@@ -110,6 +113,8 @@ def main():
             rows.append(row)
             print(json.dumps(row), flush=True)
     finally:
+        run(["git", "reset", "-q", "--hard"], repo, check=False)
+        run(["git", "clean", "-fdxq", "--", "Cargo.lock"], repo, check=False)
         try:
             with open(out, "w") as handle:
                 json.dump(rows, handle, indent=2)

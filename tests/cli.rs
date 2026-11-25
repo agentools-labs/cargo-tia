@@ -1432,6 +1432,39 @@ fn quoted_build_key_of_a_path_dependency_selects_the_whole_workspace() {
     assert!(is_full(&repo.select("HEAD", &[])));
 }
 
+#[test]
+fn patches_in_included_config_files_count() {
+    let repo = chain();
+    repo.write(".cargo/config.toml", "include = [\"patches.toml\"]\n");
+    repo.write(
+        ".cargo/patches.toml",
+        "[patch.crates-io]\ncore = { path = \"crates/core\" }\n",
+    );
+    let manifest = fs::read_to_string(repo.path("crates/lonely/Cargo.toml")).unwrap();
+    repo.write(
+        "crates/lonely/Cargo.toml",
+        &manifest.replace("[dependencies]\n", "[dependencies]\nwrapper = \"1\"\n"),
+    );
+    repo.commit("included patch");
+    repo.append("crates/core/src/lib.rs", "pub fn g() {}\n");
+    assert!(selected(&repo.select("HEAD", &[])).contains(&"lonely".to_string()));
+}
+
+#[test]
+fn source_replacement_directories_select_the_whole_workspace() {
+    let repo = chain();
+    repo.write(
+        ".cargo/config.toml",
+        "[source.crates-io]\nreplace-with = \"vendored\"\n\n[source.vendored]\ndirectory = \"crates/lonely/vendor\"\n",
+    );
+    repo.write("crates/lonely/vendor/widget/src/lib.rs", "pub fn w() {}\n");
+    repo.commit("vendored sources");
+    // Any member could use the vendored crate, not only the package that holds the directory.
+    repo.append("crates/lonely/vendor/widget/src/lib.rs", "// changed\n");
+    let json = repo.select("HEAD", &[]);
+    assert!(is_full(&json), "{json:#}");
+}
+
 /// A small deterministic generator, so the property test needs no extra crate.
 struct Rng(u64);
 

@@ -32,6 +32,9 @@ pub struct Workspace {
     pub foreign: Vec<(String, Vec<usize>)>,
     /// Files that the manifests of non-member path dependencies name, such as `[lib] path`.
     pub foreign_files: Vec<String>,
+    /// Source replacement directories (`directory` and `local-registry` in Cargo
+    /// configuration). Registry packages from there can reach any member.
+    pub source_dirs: Vec<String>,
     /// Build scripts of the members, relative to the workspace root.
     pub build_scripts: Vec<String>,
     /// Target source files of the members, with the index of the member that declares each.
@@ -76,7 +79,12 @@ pub fn load(cargo: &OsStr, manifest_path: Option<&Path>) -> Result<Workspace, St
     let metadata: Value = serde_json::from_slice(&output.stdout)
         .map_err(|error| format!("cannot parse `cargo metadata` output: {error}"))?;
     let mut workspace = from_metadata(&metadata)?;
-    let (patched, others) = patches(&workspace);
+    let Overrides {
+        patched,
+        others,
+        sources,
+    } = overrides(&workspace);
+    workspace.source_dirs = sources;
     // A local patch that is not a member is a path dependency of every member that has a
     // registry or git dependency: one of those can resolve to it. It can also depend on any
     // member, so every member counts as patched.
@@ -209,9 +217,19 @@ fn follow_path_dependencies(workspace: &mut Workspace) {
     workspace.build_scripts.dedup();
 }
 
-/// The members that patch entries point to, and the other local patch directories, from the
-/// workspace manifest and the Cargo configuration files that Cargo reads for this workspace.
-fn patches(workspace: &Workspace) -> (Vec<usize>, Vec<String>) {
+/// What the workspace manifest and Cargo configuration redirect to local directories.
+struct Overrides {
+    /// Members that a `[patch]`, `[replace]` or `paths` entry points to.
+    patched: Vec<usize>,
+    /// Other local directories that such an entry points to.
+    others: Vec<String>,
+    /// Source replacement directories.
+    sources: Vec<String>,
+}
+
+/// Reads the workspace manifest and the Cargo configuration files that Cargo reads for this
+/// workspace, with the files they include.
+fn overrides(workspace: &Workspace) -> Overrides {
     let root = &workspace.root;
     // Each file with the directory that its relative paths start from.
     let mut files = vec![(root.join("Cargo.toml"), root.clone())];
@@ -233,14 +251,27 @@ fn patches(workspace: &Workspace) -> (Vec<usize>, Vec<String>) {
             files.push((home.join(name), base.clone()));
         }
     }
-    let (mut patched, mut others) = (Vec::new(), Vec::new());
-    for (file, base) in files {
+    let (mut patched, mut others, mut sources) = (Vec::new(), Vec::new(), Vec::new());
+    let mut seen = std::collections::BTreeSet::new();
+    while let Some((file, base)) = files.pop() {
+        if !seen.insert(file.clone()) {
+            continue;
+        }
         let Ok(text) = std::fs::read_to_string(&file) else {
             continue;
         };
         let mut paths = patch_paths(&text);
         if !file.ends_with("Cargo.toml") {
-            paths.extend(override_paths(&text));
+            paths.extend(key_strings(&text, "paths"));
+            let dir = file.parent().unwrap_or(root).to_path_buf();
+            for include in key_strings(&text, "include") {
+                files.push((dir.join(include), base.clone()));
+            }
+            for key in ["directory", "local-registry"] {
+                for source in key_strings(&text, key) {
+                    sources.push(relative(root, &normalize(&base.join(source))));
+                }
+            }
         }
         for path in paths {
             let dir = relative(root, &normalize(&base.join(path)));
@@ -254,7 +285,13 @@ fn patches(workspace: &Workspace) -> (Vec<usize>, Vec<String>) {
     patched.dedup();
     others.sort();
     others.dedup();
-    (patched, others)
+    sources.sort();
+    sources.dedup();
+    Overrides {
+        patched,
+        others,
+        sources,
+    }
 }
 
 /// The `path` values of entries in `[patch...]` and `[replace]` tables and dotted `patch.` keys.
@@ -281,39 +318,42 @@ fn patch_paths(text: &str) -> Vec<String> {
     paths
 }
 
-/// The quoted strings of a top-level `paths = [...]` array in a Cargo configuration file. These
-/// local crates override registry dependencies of the same name.
-fn override_paths(text: &str) -> Vec<String> {
-    let mut paths = Vec::new();
+/// The quoted strings of a top-level `key = "..."` or `key = [...]` (also over several lines)
+/// in a Cargo configuration file, such as `paths`, `include` or `directory`.
+fn key_strings(text: &str, key: &str) -> Vec<String> {
+    let mut strings = Vec::new();
     let mut in_array = false;
     for line in text.lines() {
         let line = line.split(" #").next().unwrap_or_default().trim();
         if line.starts_with('#') {
             continue;
         }
-        let mut rest = line;
-        if !in_array {
-            let Some(after) = line.strip_prefix("paths") else {
+        let rest = if in_array {
+            line
+        } else {
+            let value = line
+                .strip_prefix(key)
+                .map(str::trim_start)
+                .and_then(|after| after.strip_prefix('='))
+                .map(str::trim_start);
+            let Some(value) = value else {
                 continue;
             };
-            let Some(after) = after.trim_start().strip_prefix('=') else {
-                continue;
-            };
-            in_array = true;
-            rest = after;
-        }
-        let end = rest.find(']');
+            in_array = value.starts_with('[');
+            value
+        };
+        let end = if in_array { rest.find(']') } else { None };
         let inside = end.map_or(rest, |end| &rest[..end]);
         for (index, part) in inside.split(['"', '\'']).enumerate() {
             if index % 2 == 1 {
-                paths.push(part.to_string());
+                strings.push(part.to_string());
             }
         }
         if end.is_some() {
             in_array = false;
         }
     }
-    paths
+    strings
 }
 
 /// The quoted values of `key = ...` in all lines of a TOML text, skipping comment lines.
@@ -651,7 +691,23 @@ mod tests {
     }
 
     #[test]
-    fn reads_override_paths() {
+    fn reads_key_strings() {
+        let override_paths = |text| key_strings(text, "paths");
+        assert_eq!(
+            key_strings("include = \"more.toml\"\npaths = []", "include"),
+            ["more.toml"]
+        );
+        assert_eq!(
+            key_strings(
+                "include = [{ path = \"a.toml\", optional = true }]",
+                "include"
+            ),
+            ["a.toml"]
+        );
+        assert_eq!(
+            key_strings("[source.v]\ndirectory = \"vendor\"", "directory"),
+            ["vendor"]
+        );
         assert_eq!(
             override_paths("paths = [\"../a\", '../b']"),
             ["../a", "../b"]

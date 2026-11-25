@@ -110,6 +110,13 @@ pub fn classify(workspace: &Workspace, rules: &Rules, path: &str) -> Effect {
     if workspace.build_scripts.iter().any(|script| script == path) {
         return Effect::FullRun("is a build script".to_string());
     }
+    if workspace
+        .source_dirs
+        .iter()
+        .any(|dir| crate::workspace::contains(dir, path))
+    {
+        return Effect::FullRun("is in a source replacement directory".to_string());
+    }
     if let Some((_, package)) = workspace
         .cross_targets
         .iter()

@@ -101,7 +101,7 @@ workspace.
      path dependency of each member with registry or git dependencies. Cargo `paths` overrides
      count the same way. The tool reads patches and overrides as text from the workspace manifest
      and from the Cargo configuration files in the workspace root, the current directory, their
-     parents and `CARGO_HOME`.
+     parents and `CARGO_HOME`, and from the files that those configuration files include.
 
 These changes select the full workspace:
 
@@ -111,6 +111,8 @@ These changes select the full workspace:
 - `build.rs` at any depth, each build script that `cargo metadata` reports, and the custom build
   scripts of path dependencies that are not members.
 - A changed symbolic link or submodule. Its effect on other paths is unknown.
+- A file in a source replacement directory (`directory` or `local-registry` in Cargo configuration).
+  Any member can use the registry packages there.
 - A file in a directory that holds a target of another package, for example
   `[[test]] path = "../other/check.rs"`. This includes targets of the root package below a member.
 - A file outside every package, for example a root `README.md`, `.github/` or `scripts/`. A package at
@@ -174,7 +176,8 @@ This repository uses the tool on itself in [its CI workflow](.github/workflows/c
 
 ## Limits
 
-- The unit of selection is a package. A selected package runs all of its tests.
+- The unit of selection is a package. With `cargo tia test`, a selected package runs all of its tests.
+  Nextest does not run doctests, so with `cargo tia nextest` also run `cargo tia test -- --doc`.
 - The tool sees the inputs that Cargo declares and the directory that holds each file. It does not see
   files that a package reads from another package's directory (`include!`, `include_str!`,
   `#[path = "../../other/x.rs"]`, shared fixtures), environment variables, services or external tools.
@@ -186,6 +189,9 @@ This repository uses the tool on itself in [its CI workflow](.github/workflows/c
 - In a partial clone, git 2.45 and newer cannot fetch missing objects for the tool: the command fails
   and the tool selects the full workspace. Older git also gets no transport, through
   `GIT_ALLOW_PROTOCOL`.
+- Run the tool as `cargo tia`: Cargo then gives it the path of its own binary. Run directly as
+  `cargo-tia`, it calls `cargo` through rustup, and rustup older than 1.28 can download a missing
+  toolchain that the workspace pins.
 - To compare the working tree, git runs the clean filters that the repository configures, for example
   Git LFS, as `git status` does. The tool turns off `core.fsmonitor` hooks.
 - Windows is not tested.

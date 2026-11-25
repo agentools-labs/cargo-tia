@@ -178,7 +178,7 @@ fn parse(args: Vec<OsString>) -> Result<Parsed, String> {
 
 /// True for a group of short flags that holds `-p` (package) or `-m` (manifest path), such as
 /// `-p`, `-pfoo`, `-qp` or `-m`. Letters after a flag that takes a value (`-j`, `-F`, `-Z`,
-/// `-C`, and the nextest filterset `-E`) are that value.
+/// `-C`, and the nextest options `-E` and `-P`) are that value.
 fn short_selection_flag(arg: &str) -> bool {
     let Some(group) = arg
         .strip_prefix('-')
@@ -189,7 +189,8 @@ fn short_selection_flag(arg: &str) -> bool {
     for flag in group.chars() {
         match flag {
             'p' | 'm' => return true,
-            'j' | 'F' | 'Z' | 'C' | 'E' => return false,
+            // `=` starts a value, as in `-P=ci`.
+            'j' | 'F' | 'Z' | 'C' | 'E' | 'P' | '=' => return false,
             _ => {}
         }
     }
@@ -250,6 +251,7 @@ fn main() -> ExitCode {
                     .chain(workspace.targets.iter().map(|(src, _)| src))
                     .chain(&workspace.build_scripts)
                     .chain(&workspace.foreign_files)
+                    .chain(&workspace.source_dirs)
                     .chain(changes.symlinks.iter().map(|(_, target)| target));
                 for input in inputs {
                     if !workspace::normalize(&workspace.root.join(input)).starts_with(&repository) {
@@ -524,8 +526,8 @@ mod tests {
         assert_eq!(options.mode, Mode::List);
         let grouped = parse_ok(&["test", "--", "-qj2", "-Fparallel", "-v"]);
         assert_eq!(grouped.passthrough.len(), 3);
-        let filtered = parse_ok(&["nextest", "--", "-Etest(smoke)"]);
-        assert_eq!(filtered.passthrough.len(), 1);
+        let filtered = parse_ok(&["nextest", "--", "-Etest(smoke)", "-P=pre-merge", "-Pci"]);
+        assert_eq!(filtered.passthrough.len(), 3);
         let dashed = parse_ok(&["--ignore=-odd", "test", "--", "--release", "--", "-p"]);
         assert_eq!(dashed.rules.ignore, ["-odd"]);
         assert_eq!(dashed.passthrough.len(), 3);
