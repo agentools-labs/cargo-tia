@@ -2938,6 +2938,27 @@ fn a_deleted_target_specification_selects_the_whole_workspace() {
     );
 }
 
+#[test]
+fn modules_of_a_path_dependency_build_script_in_another_directory() {
+    let repo = chain();
+    repo.append("Cargo.toml", "exclude = [\"vendor\"]\n");
+    vendor_crate(&repo, "vendor/two", &[]);
+    repo.write("vendor/two/codegen/main.rs", "mod helper;\nfn main() {}\n");
+    repo.write("vendor/two/codegen/helper.rs", "pub fn h() {}\n");
+    repo.write(
+        "vendor/one/Cargo.toml",
+        "[package]\nname = \"one\"\nversion = \"0.1.0\"\nedition = \"2021\"\nbuild = \"../two/codegen/main.rs\"\n",
+    );
+    repo.write("vendor/one/src/lib.rs", "pub fn o() {}\n");
+    use_vendor_crate(&repo, "lonely", "one");
+    use_vendor_crate(&repo, "builder", "two");
+    repo.commit("shared code generator");
+    // one's build script compiles helper.rs, which lies in two's directory.
+    repo.append("vendor/two/codegen/helper.rs", "// changed\n");
+    let json = repo.select("HEAD", &[]);
+    assert!(is_full(&json), "{json:#}");
+}
+
 /// A small deterministic generator, so the property test needs no extra crate.
 struct Rng(u64);
 

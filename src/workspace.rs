@@ -241,6 +241,13 @@ fn follow_path_dependencies(workspace: &mut Workspace) {
         };
         for script in key_values(&text, "build") {
             let script = relative(&root, &normalize(&base.join(script)));
+            // Outside the dependency's directory, its modules belong to another package.
+            if !contains(&dir, &script) {
+                let parent = script.rsplit_once('/').map_or("", |(parent, _)| parent);
+                workspace
+                    .foreign_targets
+                    .push((parent.to_string(), dir.clone()));
+            }
             workspace.build_scripts.push(script);
         }
         let mut paths: Vec<PathBuf> = key_values(&text, "path")

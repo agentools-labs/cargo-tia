@@ -58,7 +58,9 @@ def cargo_test(args, cwd):
         "exit": result.returncode,
         "compile_failures": broken,
         "failing_packages": failing,
-        "inconclusive": result.returncode != 0 and (bool(broken) or not failing),
+        # A test runner that could not start names packages too, but ran no test.
+        "inconclusive": result.returncode != 0 and (
+            bool(broken) or not failing or "could not execute process" in result.stderr),
     }
 
 

@@ -69,7 +69,8 @@ Arguments after `--` go to the test command. They must not change the packages: 
 `--manifest-path` there, and nextest's build-reuse options `--archive-file` and
 `--binaries-metadata`, which conflict with `--workspace`. A configuration option there (Cargo's `--config`, nextest's `--config-file` or
 `--tool-config-file`) can change every package, so it selects the full workspace. A custom target
-specification file (`--target spec.json`) there counts as a full-run file. So do `--features`
+specification file (`--target spec.json`) there counts as a full-run file. For a partial selection
+that is not empty, so do `--features`
 (`-F`, also in a group), `--test`, `--bin`, `--example` or `--bench` with a target name or glob that no
 selected package matches, and `--lib` or `--doc` when no selected package has a library: Cargo checks
 those against the selected packages.

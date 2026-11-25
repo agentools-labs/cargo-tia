@@ -52,4 +52,11 @@ jobs:
       - name: Show the selection
         run: cargo tia list --base "$BASE"
       - name: Test the selection
-        run: cargo tia test --base "$BASE" -- --locked
+        run: |
+          # After a force push that rolls back, the previous tip is not an ancestor of HEAD:
+          # the merge base is HEAD itself, so test the full workspace.
+          if git merge-base --is-ancestor "$BASE" HEAD 2>/dev/null; then
+            cargo tia test --base "$BASE" -- --locked
+          else
+            cargo test --workspace --locked
+          fi
