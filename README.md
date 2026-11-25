@@ -68,7 +68,8 @@ Arguments after `--` go to the test command. They must not change the packages: 
 `-p` and `-m` (also in a group such as `-qp`), `--package`, `--workspace`, `--exclude` and
 `--manifest-path` there, and nextest's build-reuse options `--archive-file` and
 `--binaries-metadata`, which conflict with `--workspace`. A configuration option there (Cargo's `--config`, nextest's `--config-file` or
-`--tool-config-file`) can change every package, so it selects the full workspace. So do `--features`
+`--tool-config-file`) can change every package, so it selects the full workspace. A custom target
+specification file (`--target spec.json`) there counts as a full-run file. So do `--features`
 (`-F`, also in a group), `--test`, `--bin`, `--example` or `--bench` with a target name or glob that no
 selected package matches, and `--lib` or `--doc` when no selected package has a library: Cargo checks
 those against the selected packages.
@@ -146,6 +147,7 @@ because a case-insensitive file system reads them so.
   of a path dependency. Git cannot see changes there.
 - A non-member path dependency that inherits dependencies from a workspace manifest that the tool
   cannot find.
+- A sparse checkout that leaves out tracked files: Cargo cannot see the tests in them.
 - With `--committed`: any difference between the working tree and `HEAD` (tracked, untracked or hidden
   files). The tool reads the workspace, its configuration and links from the working tree.
 
