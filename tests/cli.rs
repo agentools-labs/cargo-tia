@@ -1860,6 +1860,10 @@ fn weak_stat_settings_cannot_hide_edits() {
     let repo = chain();
     repo.git(&["config", "core.trustctime", "false"]);
     repo.git(&["config", "core.checkStat", "minimal"]);
+    // Let the index become newer than the files, so git trusts their stat data.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    repo.git(&["update-index", "--really-refresh"]);
+    repo.git(&["status", "--porcelain"]);
     let path = repo.path("crates/lonely/src/lib.rs");
     let before = fs::metadata(&path).unwrap().modified().unwrap();
     let text = fs::read_to_string(&path).unwrap();

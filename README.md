@@ -77,8 +77,8 @@ Arguments after `--` go to the test command. They must not change the packages: 
 2. It lists the files that changed since the merge base. The list includes staged, unstaged and
    untracked files, and edits to files marked assume-unchanged or skip-worktree. Without a sparse
    checkout, a missing skip-worktree file counts as deleted. Git configuration
-   such as `diff.ignoreSubmodules`, `core.fsmonitor`, `core.fileMode` or `core.ignoreCase` cannot hide
-   a change. With `--committed`, the list includes only
+   such as `diff.ignoreSubmodules`, `core.fsmonitor`, `core.fileMode`, `core.ignoreCase`,
+   `core.trustctime` or `core.checkStat` cannot hide a change. With `--committed`, the list includes only
    committed changes.
 3. It reads the workspace with `cargo metadata --no-deps --offline`.
 4. It gives each changed file one effect, in this order:
@@ -136,8 +136,9 @@ These changes select the full workspace:
   of a path dependency. Git cannot see changes there.
 - A non-member path dependency that inherits dependencies from a workspace manifest that the tool
   cannot find.
-- With `--committed`: a `Cargo.toml`, a file in a `.cargo` directory or an included configuration file
-  with uncommitted changes, or one that git hides with assume-unchanged or skip-worktree. The tool reads the workspace from the working tree, so the
+- With `--committed`: a `Cargo.toml`, a file in a `.cargo` directory, an included configuration file,
+  a symbolic link or a submodule with uncommitted changes, or one that git hides with assume-unchanged
+  or skip-worktree. The tool reads the workspace from the working tree, so the
   working tree must match `HEAD` there.
 
 A dependency on a registry package with the same name as a member also counts as an edge to that
