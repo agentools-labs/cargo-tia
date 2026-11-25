@@ -2558,7 +2558,8 @@ fn feature_and_target_arguments_need_the_selected_packages() {
     )
     .unwrap();
     repo.write("crates/app/tests/smoke.rs", "#[test] fn t() {}\n");
-    repo.commit("smoke test in app");
+    repo.write("crates/lonely/tests/lonely_smoke.rs", "#[test] fn t() {}\n");
+    repo.commit("smoke tests");
     let cargo = fake_cargo(&repo);
     repo.append("crates/lonely/src/lib.rs", "// changed\n");
     let run = |args: &[&str]| {
@@ -2584,6 +2585,7 @@ fn feature_and_target_arguments_need_the_selected_packages() {
     run(&["tia", "test", "--base", "HEAD", "--", "--lib"]);
     run(&["tia", "test", "--base", "HEAD", "--", "-qFapp/extra"]);
     run(&["tia", "test", "--base", "HEAD", "--", "--test", "smo*"]);
+    run(&["tia", "test", "--base", "HEAD", "--", "--test", "*smoke"]);
     let calls = fs::read_to_string(repo.path("cargo-calls.log")).unwrap();
     let lines: Vec<&str> = calls.lines().collect();
     assert_eq!(lines[0], "test --workspace --test smoke");
@@ -2597,6 +2599,11 @@ fn feature_and_target_arguments_need_the_selected_packages() {
     assert_eq!(
         lines[4], "test --workspace --test smo*",
         "no selected target matches the glob"
+    );
+    assert!(
+        lines[5].starts_with("test --workspace --exclude"),
+        "lonely_smoke matches: {}",
+        lines[5]
     );
 }
 
