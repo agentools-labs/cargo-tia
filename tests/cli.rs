@@ -2075,6 +2075,50 @@ fn hidden_files_without_changes_select_nothing() {
     assert!(selected(&json).is_empty(), "{json:#}");
 }
 
+#[test]
+fn deleted_config_under_a_relative_cargo_home() {
+    let repo = chain();
+    repo.write("crates/app/cargo-home/config.toml", "[env]\nX = \"1\"\n");
+    repo.commit("cargo home");
+    fs::remove_file(repo.path("crates/app/cargo-home/config.toml")).unwrap();
+    let output = isolated(Command::new(BIN))
+        .current_dir(&repo.dir)
+        .env("CARGO_HOME", "crates/app/cargo-home")
+        .args(["list", "--json", "--base", "HEAD"])
+        .output()
+        .unwrap();
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(is_full(&json), "{json:#}");
+}
+
+#[cfg(unix)]
+#[test]
+fn manifests_behind_symlinks() {
+    let repo = chain();
+    let manifest = fs::read_to_string(repo.path("crates/app/Cargo.toml")).unwrap();
+    repo.write("manifests/app.toml", &manifest);
+    fs::remove_file(repo.path("crates/app/Cargo.toml")).unwrap();
+    std::os::unix::fs::symlink(
+        "../../manifests/app.toml",
+        repo.path("crates/app/Cargo.toml"),
+    )
+    .unwrap();
+    repo.commit("linked manifest");
+    // An edit of the target is a manifest change.
+    repo.append("manifests/app.toml", "\n");
+    assert!(is_full(&repo.select("HEAD", &[])));
+    repo.git(&["checkout", "-q", "--", "."]);
+    // With --committed, the target must match HEAD too.
+    repo.append("crates/core/src/lib.rs", "pub fn g() {}\n");
+    repo.commit("core");
+    repo.write(
+        "manifests/app.toml",
+        &manifest.replace("mid = { path = \"../mid\" }\n", ""),
+    );
+    let json = repo.select("HEAD~1", &["--committed"]);
+    assert!(is_full(&json), "{json:#}");
+}
+
 /// A small deterministic generator, so the property test needs no extra crate.
 struct Rng(u64);
 

@@ -42,6 +42,8 @@ pub struct Workspace {
     pub config_files: Vec<String>,
     /// Included configuration files, each with the configuration file that includes it.
     pub config_includes: Vec<(String, String)>,
+    /// Files behind member manifests that are symbolic links.
+    pub manifest_targets: Vec<String>,
     /// Non-member path dependencies whose inherited dependencies cannot be found.
     pub unresolved: Vec<String>,
     /// Build scripts of the members, relative to the workspace root.
@@ -336,8 +338,13 @@ fn overrides(workspace: &Workspace) -> Overrides {
             }
         }
     }
+    // Cargo resolves a relative CARGO_HOME from the directory it runs in.
     let cargo_home = std::env::var_os("CARGO_HOME")
         .map(PathBuf::from)
+        .map(|home| match &cwd {
+            Some(cwd) if home.is_relative() => lexical(&cwd.join(home)),
+            _ => home,
+        })
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")));
     if let Some(home) = cargo_home {
         let base = home.parent().unwrap_or(&home).to_path_buf();
@@ -554,6 +561,11 @@ pub fn from_metadata(metadata: &Value) -> Result<Workspace, String> {
             .as_str()
             .ok_or_else(|| format!("package `{name}` has no manifest_path"))?;
         let dir = Path::new(manifest).parent().unwrap_or(Path::new(manifest));
+        // A manifest that is a symbolic link: its target is a manifest too.
+        let target = normalize(Path::new(manifest));
+        if target != normalize(dir).join("Cargo.toml") {
+            workspace.manifest_targets.push(relative(&root, &target));
+        }
         workspace.packages.push(Package {
             name: name.to_string(),
             dir: relative(&root, &normalize(dir)),

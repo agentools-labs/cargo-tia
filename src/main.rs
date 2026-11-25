@@ -249,7 +249,11 @@ fn main() -> ExitCode {
         &workspace.root,
         options.base.as_deref(),
         options.committed,
-        &workspace.config_files,
+        &[
+            workspace.config_files.clone(),
+            workspace.manifest_targets.clone(),
+        ]
+        .concat(),
     ) {
         Ok(changes) => {
             let mut selection = select::select(

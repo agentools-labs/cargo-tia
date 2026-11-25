@@ -113,6 +113,9 @@ pub fn classify(workspace: &Workspace, rules: &Rules, path: &str) -> Effect {
     if workspace.config_files.iter().any(|file| file == path) {
         return Effect::FullRun("is a Cargo configuration file".to_string());
     }
+    if workspace.manifest_targets.iter().any(|file| file == path) {
+        return Effect::FullRun("is a package manifest behind a symbolic link".to_string());
+    }
     if workspace
         .source_dirs
         .iter()
