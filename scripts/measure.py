@@ -77,7 +77,7 @@ def main():
     # Cargo runs inside the clone: a relative path would point into it.
     os.environ["CARGO_TARGET_DIR"] = os.path.abspath(target_dir)
     select_count, timed_count = int(select_count), int(timed_count)
-    if run(["git", "status", "--porcelain"], repo).stdout.strip():
+    if run(["git", "status", "--porcelain", "--untracked-files=all"], repo).stdout.strip():
         raise SystemExit(f"{repo} has uncommitted changes; use a clean clone")
     # Checking out old commits would leave submodules at other revisions.
     if any(line.startswith("160000 ") for line in run(["git", "ls-files", "-s"], repo).stdout.splitlines()):

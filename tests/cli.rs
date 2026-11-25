@@ -436,7 +436,7 @@ fn default_base_is_the_merge_base_with_origin() {
     let output = clone.tia(&["tia", "list", "--json"]);
     assert!(output.status.success(), "{}", stderr(&output));
     let json: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(json["base"], "origin/main");
+    assert_eq!(json["base"], "refs/remotes/origin/main");
     assert_eq!(selected(&json), ["app", "mid"]);
 }
 
@@ -2578,7 +2578,14 @@ fn links_inside_a_submodule_reach_their_targets() {
     // lonely compiles the shared file through the link in its submodule.
     repo.append("crates/mid/src/lib.rs", "// changed\n");
     let json = repo.select("HEAD", &[]);
-    assert!(selected(&json).contains(&"lonely".to_string()), "{json:#}");
+    assert_eq!(selected(&json), ["app", "lonely", "mid"], "{json:#}");
+    let link = json["changed_files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|file| file["path"] == "crates/lonely/vendor/shared.rs")
+        .unwrap();
+    assert_eq!(link["link_to"], "crates/mid/src/lib.rs");
 }
 
 #[cfg(unix)]
@@ -2762,7 +2769,8 @@ fn a_hidden_file_that_became_a_link_counts() {
         repo.path("crates/lonely/tests/helper.sh"),
     )
     .unwrap();
-    assert_eq!(selected(&repo.select("HEAD", &[])), ["lonely"]);
+    // A link now: its effect on other paths is unknown.
+    assert!(is_full(&repo.select("HEAD", &[])));
 }
 
 #[test]
@@ -2817,6 +2825,44 @@ fn a_custom_target_specification_selects_the_whole_workspace_when_it_changes() {
     assert_eq!(
         calls,
         "test --workspace --target crates/lonely/targets/custom.json\n"
+    );
+}
+
+#[test]
+fn deleting_an_auto_discovered_binary_reaches_its_package() {
+    let repo = Repo::new("auto-bin");
+    repo.write(
+        "Cargo.toml",
+        "[workspace]\nresolver = \"2\"\nmembers = [\"app\", \"app/src/bin/demo\"]\n",
+    );
+    repo.write(
+        "app/Cargo.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    repo.write("app/src/bin/other/main.rs", "fn main() {}\n");
+    repo.write("app/src/bin/demo/main.rs", "fn main() {}\n");
+    repo.write(
+        "app/src/bin/demo/Cargo.toml",
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[lib]\npath = \"lib.rs\"\n",
+    );
+    repo.write("app/src/bin/demo/lib.rs", "pub fn d() {}\n");
+    repo.commit("auto-discovered binaries");
+    fs::remove_file(repo.path("app/src/bin/demo/main.rs")).unwrap();
+    let json = repo.select("HEAD", &[]);
+    assert!(selected(&json).contains(&"app".to_string()), "{json:#}");
+}
+
+#[test]
+fn an_ambiguous_base_selects_the_whole_workspace() {
+    let repo = chain();
+    repo.git(&["branch", "release"]);
+    repo.append("crates/lonely/src/lib.rs", "// changed\n");
+    repo.commit("work");
+    repo.git(&["tag", "release"]);
+    let json = repo.select("release", &[]);
+    assert!(
+        is_full(&json),
+        "a branch and a tag share the name: {json:#}"
     );
 }
 

@@ -657,6 +657,17 @@ pub fn from_metadata(metadata: &Value) -> Result<Workspace, String> {
     workspace.root_entries.sort();
     // A member inside the source directory of another package's target can hold modules of
     // that target (`mod engine;` with a member at `src/engine/`). Count it as a dependency.
+    // Cargo also discovers targets in these directories, so a file there can add or remove one.
+    for (index, package) in workspace.packages.iter().enumerate() {
+        for standard in ["src", "tests", "examples", "benches"] {
+            let dir = if package.dir.is_empty() {
+                standard.to_string()
+            } else {
+                format!("{}/{standard}", package.dir)
+            };
+            source_dirs.push((dir, index));
+        }
+    }
     let mut nested = Vec::new();
     for (source_dir, declarer) in &source_dirs {
         for (member, package) in workspace.packages.iter().enumerate() {

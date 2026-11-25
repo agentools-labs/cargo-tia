@@ -162,7 +162,9 @@ pub fn changed_files(
                 && (!sparse || std::fs::symlink_metadata(toplevel.join(path)).is_ok());
             let hidden = assume_unchanged || skip_worktree;
             // A hidden link or submodule can change its target without git seeing it.
-            if hidden && (mode == "120000" || mode == "160000") {
+            let link_now = std::fs::symlink_metadata(toplevel.join(path))
+                .is_ok_and(|metadata| metadata.is_symlink());
+            if hidden && (mode == "120000" || mode == "160000" || link_now) {
                 hidden_links.push(path.to_string());
             }
             hidden.then(|| path.to_string())
@@ -390,12 +392,8 @@ fn differs(toplevel: &Path, revision: &str, path: &str) -> bool {
 fn default_base(toplevel: &Path) -> Option<String> {
     let head = git(
         toplevel,
-        &[
-            "symbolic-ref",
-            "--quiet",
-            "--short",
-            "refs/remotes/origin/HEAD",
-        ],
+        // The full name: a short one can be ambiguous with a tag.
+        &["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
     )
     .ok()?;
     let head = head.trim();
@@ -427,7 +425,9 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     // Git skips a directory that it cannot read with only a warning. The untracked files are
     // then unknown.
     let scans = args.contains(&"--others") || args.first() == Some(&"status");
-    if output.status.success() && scans && !output.stderr.is_empty() {
+    // An ambiguous name (a branch and a tag) only warns: the revision is then unknown.
+    let ambiguous = String::from_utf8_lossy(&output.stderr).contains("ambiguous");
+    if output.status.success() && (scans && !output.stderr.is_empty() || ambiguous) {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
     if output.status.success() {
