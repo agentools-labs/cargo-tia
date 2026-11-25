@@ -12,14 +12,15 @@
 
 /// Returns true when `pattern` matches the `/`-separated `path`.
 pub fn matches(pattern: &str, path: &str) -> bool {
-    let mut pattern = pattern;
-    while let Some(rest) = pattern.strip_prefix("./") {
-        pattern = rest;
-    }
+    // The trailing `/` first: `./` is `./**`, everything.
     let pattern = match pattern.strip_suffix('/') {
         Some(dir) => format!("{dir}/**"),
         None => pattern.to_string(),
     };
+    let mut pattern = pattern.as_str();
+    while let Some(rest) = pattern.strip_prefix("./") {
+        pattern = rest;
+    }
     let pattern: Vec<&str> = pattern.split('/').collect();
     let path: Vec<&str> = path.split('/').collect();
     match_segments(&pattern, &path)
@@ -71,6 +72,8 @@ mod tests {
         assert!(matches("./crates/schema/**", "crates/schema/src/lib.rs"));
         assert!(matches("././Cargo.lock", "Cargo.lock"));
         assert!(matches("./docs/", "docs/a.md"));
+        assert!(matches("./", "src/lib.rs"));
+        assert!(matches("./", "Cargo.lock"));
     }
 
     #[test]

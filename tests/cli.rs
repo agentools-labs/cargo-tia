@@ -3435,6 +3435,25 @@ fn a_link_restored_over_a_staged_file_still_reaches_its_target() {
 
 #[cfg(unix)]
 #[test]
+fn a_link_through_a_link_to_a_deleted_directory_reaches_its_target() {
+    let repo = chain();
+    // mid holds a link to the workspace root; lonely links through it into core.
+    std::os::unix::fs::symlink("../..", repo.path("crates/mid/workspace")).unwrap();
+    repo.write("crates/core/src/support/value.rs", "pub fn v() {}\n");
+    std::os::unix::fs::symlink(
+        "../../mid/workspace/crates/core/src/support/value.rs",
+        repo.path("crates/lonely/src/shared.rs"),
+    )
+    .unwrap();
+    repo.commit("links");
+    // Deleting the directory leaves lonely's link dangling: `mod shared;` no longer compiles.
+    fs::remove_dir_all(repo.path("crates/core/src/support")).unwrap();
+    let json = repo.select("HEAD", &[]);
+    assert!(selected(&json).contains(&"lonely".to_string()), "{json:#}");
+}
+
+#[cfg(unix)]
+#[test]
 fn links_that_loop_select_the_whole_workspace_quickly() {
     let repo = chain();
     // Two links to their own directory double the paths below it with each round of links.

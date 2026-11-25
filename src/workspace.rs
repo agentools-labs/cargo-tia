@@ -796,20 +796,22 @@ pub fn contains(dir: &str, path: &str) -> bool {
         .is_some_and(|rest| rest.starts_with('/'))
 }
 
-/// Resolves symbolic links when the path exists; otherwise removes `.` and `..` lexically.
+/// Resolves symbolic links. For a path that does not exist, such as a deleted file or
+/// directory, resolves the longest part that exists and adds the missing parts: they cannot be
+/// links, so `.` and `..` among them are removed lexically.
 pub fn normalize(path: &Path) -> PathBuf {
     if let Ok(canonical) = std::fs::canonicalize(path) {
         return canonical;
     }
-    // A deleted file: resolve the links of the directory that still holds it.
-    let path = lexical(path);
-    match (path.parent(), path.file_name()) {
-        (Some(parent), Some(name)) => match std::fs::canonicalize(parent) {
-            Ok(parent) => parent.join(name),
-            Err(_) => path,
-        },
-        _ => path,
+    let components: Vec<_> = path.components().collect();
+    for keep in (1..components.len()).rev() {
+        let existing: PathBuf = components[..keep].iter().collect();
+        if let Ok(canonical) = std::fs::canonicalize(&existing) {
+            let missing: PathBuf = components[keep..].iter().collect();
+            return lexical(&canonical.join(missing));
+        }
     }
+    lexical(path)
 }
 
 /// Resolves the links of the directories in a path but not of its last part.

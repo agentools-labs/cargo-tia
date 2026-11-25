@@ -123,14 +123,17 @@ def main():
     if not os.path.isfile(tia):
         raise SystemExit(f"cannot find the cargo-tia executable: {tia}")
     repo, out = os.path.abspath(repo), os.path.abspath(out)
-    real_repo = os.path.realpath(repo)
+    # The workspace can be a directory of a larger repository: git cleans and checks the whole
+    # repository, and Cargo runs in the workspace.
+    top = run(["git", "rev-parse", "--show-toplevel"], repo).stdout.strip()
+    real_repo = os.path.realpath(top)
 
     def inside(path):
         # With links resolved: /tmp and /private/tmp are one directory on macOS.
         real = os.path.realpath(path)
         return os.path.commonpath([real, real_repo]) == real_repo
 
-    # The clone is cleaned between commits: the tool must live elsewhere.
+    # The repository is cleaned between commits: the tool must live elsewhere.
     if inside(tia):
         raise SystemExit("build or install cargo-tia outside the measured clone")
     # The clone is cleaned between runs: the warm build must live outside it.
@@ -146,29 +149,29 @@ def main():
     # Plain output: the script reads Cargo's messages.
     os.environ["CARGO_TERM_COLOR"] = "never"
     select_count, timed_count = int(select_count), int(timed_count)
-    if run(["git", "status", "--porcelain", "--untracked-files=all"], repo).stdout.strip():
+    if run(["git", "status", "--porcelain", "--untracked-files=all"], top).stdout.strip():
         raise SystemExit(f"{repo} has uncommitted changes; use a clean clone")
     # Git keeps local edits in assume-unchanged or skip-worktree files through checkouts, and
     # status does not show them: the replay would measure those edits.
-    hidden = [line for line in run(["git", "ls-files", "-v"], repo).stdout.splitlines()
+    hidden = [line for line in run(["git", "ls-files", "-v"], top).stdout.splitlines()
               if line[:1].islower() or line[:1] == "S"]
     if hidden:
         raise SystemExit(f"{repo} has files marked assume-unchanged or skip-worktree, such as "
                          f"{hidden[0][2:]}; use a clean clone")
     # Checking out old commits would leave submodules at other revisions.
-    if any(line.startswith("160000 ") for line in run(["git", "ls-files", "-s"], repo).stdout.splitlines()):
+    if any(line.startswith("160000 ") for line in run(["git", "ls-files", "-s"], top).stdout.splitlines()):
         raise SystemExit(f"{repo} has submodules, which this script does not replay")
-    start_ref = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    start_ref = run(["git", "rev-parse", "HEAD"], top).stdout.strip()
     # The full name: a short name such as heads/v1 appears when a tag has the same name.
-    head_ref = run(["git", "symbolic-ref", "-q", "HEAD"], repo, check=False).stdout.strip()
+    head_ref = run(["git", "symbolic-ref", "-q", "HEAD"], top, check=False).stdout.strip()
     branch = head_ref.removeprefix("refs/heads/") if head_ref.startswith("refs/heads/") else ""
     commits = run(
-        ["git", "rev-list", "--first-parent", "-n", str(select_count), start_ref], repo
+        ["git", "rev-list", "--first-parent", "-n", str(select_count), start_ref], top
     ).stdout.split()
     # A commit without a parent (the root, or the end of a shallow clone) has nothing to compare.
     commits = [
         commit for commit in commits
-        if run(["git", "rev-parse", "--verify", "-q", f"{commit}^1"], repo, check=False).returncode == 0
+        if run(["git", "rev-parse", "--verify", "-q", f"{commit}^1"], top, check=False).returncode == 0
     ]
     print(f"measuring {len(commits)} commits", file=sys.stderr)
     rows = []
@@ -176,10 +179,10 @@ def main():
         for index, commit in enumerate(commits):
             # A build or a test can rewrite tracked files or leave files behind. The clone is
             # disposable and the build output lives outside it.
-            run(["git", "reset", "-q", "--hard"], repo)
-            run(["git", "clean", "-ffdxq"], repo)
-            run(["git", "checkout", "-q", "--detach", commit], repo)
-            listing = run(["git", "ls-files", "-s"], repo).stdout.splitlines()
+            run(["git", "reset", "-q", "--hard"], top)
+            run(["git", "clean", "-ffdxq"], top)
+            run(["git", "checkout", "-q", "--detach", commit], top)
+            listing = run(["git", "ls-files", "-s"], top).stdout.splitlines()
             if any(line.startswith("160000 ") for line in listing):
                 row = {"commit": commit, "error": "submodules at this commit are not replayed"}
                 rows.append(row)
@@ -200,7 +203,7 @@ def main():
             data = json.loads(listed.stdout)
             row = {
                 "commit": commit,
-                "subject": run(["git", "log", "-1", "--format=%s", commit], repo).stdout.strip(),
+                "subject": run(["git", "log", "-1", "--format=%s", commit], top).stdout.strip(),
                 "changed_files": sum(1 for f in data["changed_files"] if "link_to" not in f),
                 "workspace_packages": data["workspace_packages"],
                 "full": data["full"],
@@ -212,8 +215,8 @@ def main():
                 build = run(["cargo", "test", "--workspace", "--no-run"], repo, check=False)
                 row["build_ok"] = build.returncode == 0
                 # Tests can write files: reset the clone before each run.
-                clean = lambda: (run(["git", "reset", "-q", "--hard"], repo),
-                                 run(["git", "clean", "-ffdxq"], repo))
+                clean = lambda: (run(["git", "reset", "-q", "--hard"], top),
+                                 run(["git", "clean", "-ffdxq"], top))
                 clean()
                 names = workspace_names(repo)
                 cargo_test(["--workspace"], repo, names)  # warm-up, untimed
@@ -236,13 +239,13 @@ def main():
             rows.append(row)
             print(json.dumps(row), flush=True)
     finally:
-        run(["git", "reset", "-q", "--hard"], repo, check=False)
-        run(["git", "clean", "-ffdxq"], repo, check=False)
+        run(["git", "reset", "-q", "--hard"], top, check=False)
+        run(["git", "clean", "-ffdxq"], top, check=False)
         # Restore first: the report can be a file inside the clone.
         # `git switch` takes only a branch, never a tag of the same name.
         restore = ["git", "switch", "-q", branch] if branch else [
             "git", "checkout", "-q", "--detach", start_ref]
-        restored = run(restore, repo, check=False)
+        restored = run(restore, top, check=False)
         # Cleaning can remove an ignored directory that holds the report.
         os.makedirs(os.path.dirname(out), exist_ok=True)
         with open(out, "w") as handle:
