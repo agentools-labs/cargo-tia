@@ -391,20 +391,18 @@ fn overrides(workspace: &Workspace) -> Overrides {
     let mut seen = std::collections::BTreeSet::new();
     let mut included_files: Vec<PathBuf> = Vec::new();
     while let Some((file, base)) = files.pop() {
-        if !seen.insert(file.clone()) {
-            continue;
-        }
         // Record the path before reading it: deleting a configuration file is a change too.
         if !file.ends_with("Cargo.toml") {
             config_files.push(relative(root, &file));
             config_files.push(relative(root, &normalize(&file)));
         }
         // When both exist, Cargo reads `.cargo/config` and not `.cargo/config.toml`.
-        // Only in Cargo's directory search: an include names its file exactly.
+        // Only in Cargo's directory search: an include names its file exactly, so a skipped
+        // file is not marked as seen and an include can still read it.
         let shadowed = !included_files.contains(&file)
             && file.file_name().is_some_and(|name| name == "config.toml")
             && file.with_file_name("config").is_file();
-        if shadowed {
+        if shadowed || !seen.insert(file.clone()) {
             continue;
         }
         let Ok(text) = std::fs::read_to_string(&file) else {

@@ -69,13 +69,19 @@ def main():
     # Subprocesses run inside the measured repository, so make the given paths absolute.
     tia = os.path.abspath(tia) if os.sep in tia else (shutil.which(tia) or tia)
     repo, out = os.path.abspath(repo), os.path.abspath(out)
+    real_repo = os.path.realpath(repo)
+
+    def inside(path):
+        # With links resolved: /tmp and /private/tmp are one directory on macOS.
+        real = os.path.realpath(path)
+        return os.path.commonpath([real, real_repo]) == real_repo
+
     # The clone is cleaned between commits: the tool must live elsewhere.
-    if os.path.abspath(tia).startswith(repo + os.sep):
+    if inside(tia):
         raise SystemExit("build or install cargo-tia outside the measured clone")
     # The clone is cleaned between runs: the warm build must live outside it.
     target_dir = os.environ.get("CARGO_TARGET_DIR", "")
-    absolute = os.path.abspath(target_dir) if target_dir else ""
-    if not absolute or absolute == repo or absolute.startswith(repo + os.sep):
+    if not target_dir or inside(target_dir):
         raise SystemExit("set CARGO_TARGET_DIR to a directory outside the measured clone")
     # Cargo runs inside the clone: a relative path would point into it.
     os.environ["CARGO_TARGET_DIR"] = os.path.abspath(target_dir)

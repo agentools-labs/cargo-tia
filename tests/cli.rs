@@ -3104,6 +3104,51 @@ fn target_specifications_found_through_rust_target_path() {
     assert_eq!(calls, "test --workspace --target board\n");
 }
 
+#[cfg(unix)]
+#[test]
+fn a_link_removed_from_the_index_still_reaches_its_target() {
+    let repo = chain();
+    std::os::unix::fs::symlink(
+        "../../core/src/lib.rs",
+        repo.path("crates/lonely/src/shared.rs"),
+    )
+    .unwrap();
+    repo.commit("link");
+    repo.git(&["rm", "-q", "--cached", "crates/lonely/src/shared.rs"]);
+    repo.append("crates/core/src/lib.rs", "// changed\n");
+    let json = repo.select("HEAD", &[]);
+    assert!(selected(&json).contains(&"lonely".to_string()), "{json:#}");
+}
+
+#[test]
+fn an_include_reads_a_file_that_the_directory_search_skips() {
+    let repo = chain();
+    // The root has both files: Cargo's search reads only `.cargo/config`.
+    repo.write(".cargo/config", "[build]\njobs = 2\n");
+    repo.write(
+        ".cargo/config.toml",
+        "[patch.crates-io]\ncore = { path = \"crates/core\" }\n",
+    );
+    // lonely's own configuration includes the skipped file explicitly.
+    repo.write(
+        "crates/lonely/.cargo/config.toml",
+        "include = [\"../../../.cargo/config.toml\"]\n",
+    );
+    let manifest = fs::read_to_string(repo.path("crates/lonely/Cargo.toml")).unwrap();
+    repo.write(
+        "crates/lonely/Cargo.toml",
+        &manifest.replace("[dependencies]\n", "[dependencies]\nwrapper = \"1\"\n"),
+    );
+    repo.commit("include of a skipped file");
+    repo.append("crates/core/src/lib.rs", "pub fn g() {}\n");
+    let output = repo.tia_in(
+        &repo.path("crates/lonely"),
+        &["list", "--json", "--base", "HEAD"],
+    );
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(selected(&json).contains(&"lonely".to_string()), "{json:#}");
+}
+
 /// A small deterministic generator, so the property test needs no extra crate.
 struct Rng(u64);
 

@@ -194,6 +194,8 @@ pub fn changed_files(
     }
 
     let (mut paths, mut special);
+    // Untracked links: they work like tracked ones for the package that holds them.
+    let mut untracked_links: Vec<String> = Vec::new();
     let mut uncertain = None;
     // A sparse checkout leaves tracked files out of the working tree: Cargo cannot see the
     // tests in them, whatever the selection.
@@ -253,6 +255,9 @@ pub fn changed_files(
         for path in &new_files {
             // A path that ends with `/` is a nested repository: git does not list its files.
             let link = std::fs::symlink_metadata(toplevel.join(path)).is_ok_and(|m| m.is_symlink());
+            if link {
+                untracked_links.push(path.clone());
+            }
             if link || path.ends_with('/') {
                 special.push(path.trim_end_matches('/').to_string());
             }
@@ -299,7 +304,7 @@ pub fn changed_files(
         .filter_map(|entry| entry.split_once('\t'))
         .filter(|(meta, _)| meta.split(' ').nth(1) == Some("120000"))
         .map(|(_, path)| path.to_string());
-    for path in tracked_links.chain(submodule_links) {
+    for path in tracked_links.chain(submodule_links).chain(untracked_links) {
         let link = toplevel.join(&path);
         let Ok(target) = std::fs::read_link(&link) else {
             continue;
