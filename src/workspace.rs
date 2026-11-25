@@ -703,8 +703,12 @@ fn string_list(config: &Value, key: &str) -> Result<Vec<String>, String> {
 /// True when `path` lies in the directory `dir`; both are relative to the workspace root, and
 /// the empty `dir` is the root itself.
 pub fn contains(dir: &str, path: &str) -> bool {
-    if dir.is_empty() {
-        return !path.starts_with("../") && path != "..";
+    let ups = |text: &str| text.split('/').take_while(|part| *part == "..").count();
+    // The workspace root or a directory above it: it holds every path that does not climb
+    // higher than it.
+    if dir.split('/').all(|part| part.is_empty() || part == "..") {
+        let depth = if dir.is_empty() { 0 } else { ups(dir) };
+        return path != dir && ups(path) <= depth;
     }
     path.strip_prefix(dir)
         .is_some_and(|rest| rest.starts_with('/'))
@@ -790,6 +794,20 @@ mod tests {
 
     fn target(kind: &str, src: &str) -> Value {
         json!({"kind": [kind], "src_path": src})
+    }
+
+    #[test]
+    fn containment_of_the_root_and_its_parents() {
+        assert!(contains("", "crates/a/x.rs"));
+        assert!(!contains("", "../web/x"));
+        assert!(contains("..", "crates/a/x.rs"));
+        assert!(contains("..", "../web/x"));
+        assert!(!contains("..", "../../other/x"));
+        assert!(contains("../..", "../../other/x"));
+        assert!(contains("../web", "../web/x"));
+        assert!(!contains("../web", "../webx/y"));
+        assert!(contains("crates", "crates/a"));
+        assert!(!contains("crates", "crates-extra/a"));
     }
 
     #[test]

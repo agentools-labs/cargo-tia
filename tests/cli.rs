@@ -2582,6 +2582,8 @@ fn feature_and_target_arguments_need_the_selected_packages() {
         "app/extra",
     ]);
     run(&["tia", "test", "--base", "HEAD", "--", "--lib"]);
+    run(&["tia", "test", "--base", "HEAD", "--", "-qFapp/extra"]);
+    run(&["tia", "test", "--base", "HEAD", "--", "--test", "smo*"]);
     let calls = fs::read_to_string(repo.path("cargo-calls.log")).unwrap();
     let lines: Vec<&str> = calls.lines().collect();
     assert_eq!(lines[0], "test --workspace --test smoke");
@@ -2591,6 +2593,73 @@ fn feature_and_target_arguments_need_the_selected_packages() {
         "{}",
         lines[2]
     );
+    assert_eq!(lines[3], "test --workspace -qFapp/extra");
+    assert_eq!(
+        lines[4], "test --workspace --test smo*",
+        "no selected target matches the glob"
+    );
+}
+
+#[test]
+fn paths_override_above_the_workspace_root() {
+    let repo = Repo::new("override-above");
+    repo.write_workspace("rust", &[("core", &[]), ("app", &[])]);
+    repo.write(".cargo/config.toml", "paths = [\".\"]\n");
+    repo.commit("initial");
+    repo.append("rust/crates/core/src/lib.rs", "pub fn g() {}\n");
+    let output = repo.tia_in(
+        &repo.dir,
+        &[
+            "list",
+            "--json",
+            "--base",
+            "HEAD",
+            "--manifest-path",
+            repo.path("rust/Cargo.toml").to_str().unwrap(),
+        ],
+    );
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        is_full(&json),
+        "the override directory holds every crate: {json:#}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn library_arguments_need_a_selected_library() {
+    let repo = Repo::new("bin-and-lib");
+    repo.write(
+        "Cargo.toml",
+        "[workspace]\nresolver = \"2\"\nmembers = [\"tool\", \"lib\"]\n",
+    );
+    repo.write(
+        "tool/Cargo.toml",
+        "[package]\nname = \"tool\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    repo.write("tool/src/main.rs", "fn main() {}\n");
+    repo.write(
+        "lib/Cargo.toml",
+        "[package]\nname = \"lib\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    repo.write("lib/src/lib.rs", "pub fn l() {}\n");
+    repo.commit("initial");
+    fs::write(
+        repo.path(".git/info/exclude"),
+        "fake-cargo.sh\ncargo-calls.log\n",
+    )
+    .unwrap();
+    let cargo = fake_cargo(&repo);
+    repo.append("tool/src/main.rs", "// changed\n");
+    let output = isolated(Command::new(BIN))
+        .current_dir(&repo.dir)
+        .env("CARGO", &cargo)
+        .args(["tia", "test", "--base", "HEAD", "--", "--lib"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    let calls = fs::read_to_string(repo.path("cargo-calls.log")).unwrap();
+    assert_eq!(calls, "test --workspace --lib\n");
 }
 
 /// A small deterministic generator, so the property test needs no extra crate.

@@ -192,6 +192,12 @@ fn parse(args: Vec<OsString>) -> Result<Parsed, String> {
 /// come before them in a group: any other letter takes the rest of the group as its value, as
 /// in `-j2`, `-Fparallel` or nextest's `-Etest(smoke)`.
 fn short_selection_flag(arg: &str) -> bool {
+    short_flag(arg, &['p', 'm'])
+}
+
+/// True when a group of short flags holds one of `wanted`. Only flags without a value (`-q`,
+/// `-v`, `-r`, `-h`, `-V`) can come before it: any other letter takes the rest as its value.
+fn short_flag(arg: &str, wanted: &[char]) -> bool {
     let Some(group) = arg
         .strip_prefix('-')
         .filter(|group| !group.starts_with('-'))
@@ -199,10 +205,11 @@ fn short_selection_flag(arg: &str) -> bool {
         return false;
     };
     for flag in group.chars() {
-        match flag {
-            'p' | 'm' => return true,
-            'q' | 'v' | 'r' | 'h' | 'V' => {}
-            _ => return false,
+        if wanted.contains(&flag) {
+            return true;
+        }
+        if !matches!(flag, 'q' | 'v' | 'r' | 'h' | 'V') {
+            return false;
         }
     }
     false
@@ -230,8 +237,21 @@ fn needs_workspace(
             Some((flag, value)) => (flag, Some(value.to_string())),
             None => (arg.as_str(), None),
         };
-        if flag == "--features" || arg.starts_with("-F") {
+        if flag == "--features" || short_flag(arg, &['F']) {
             return Some(format!("`{arg}` after `--` names features of any package"));
+        }
+        // Cargo fails when no selected package has a library.
+        if flag == "--lib" || flag == "--doc" {
+            let library = workspace.target_names.iter().any(|(kind, _, package)| {
+                matches!(kind.as_str(), "lib" | "rlib" | "dylib" | "proc-macro")
+                    && selection.packages.iter().any(|(index, _)| index == package)
+            });
+            if !library {
+                return Some(format!(
+                    "`{arg}` after `--` needs a library, and no selected package has one"
+                ));
+            }
+            continue;
         }
         let kind = match flag {
             "--test" => "test",
@@ -247,8 +267,11 @@ fn needs_workspace(
         if name.starts_with('-') {
             continue;
         }
+        // Cargo accepts a glob as a target name; it fails when nothing selected matches.
         let selected = workspace.target_names.iter().any(|(k, n, package)| {
-            k == kind && *n == name && selection.packages.iter().any(|(index, _)| index == package)
+            k == kind
+                && crate::glob::matches(&name, n)
+                && selection.packages.iter().any(|(index, _)| index == package)
         });
         if !selected {
             return Some(format!(
