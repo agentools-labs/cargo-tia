@@ -134,7 +134,10 @@ because a case-insensitive file system reads them so.
   as a workspace file.
 - `rust-toolchain`, `rust-toolchain.toml`, `.cargo/config` and `.cargo/config.toml`, at any depth.
 - `.config/nextest.toml` in the workspace root: nextest's filters, timeouts and retries for every
-  package.
+  package. Also the files and directories that the commands of its scripts name, such as
+  `scripts/setup-db.sh` in `command = "scripts/setup-db.sh --fast"`: a setup script can prepare the
+  tests of any package.
+- `.gitattributes` at any depth: it can change the checked-out bytes of every file below it.
 - `build.rs` at any depth, each build script that `cargo metadata` reports, and the custom build
   scripts of path dependencies that are not members.
 - A changed symbolic link or submodule, or an untracked nested repository. Its effect on other paths

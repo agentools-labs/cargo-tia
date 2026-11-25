@@ -17,6 +17,8 @@ pub const FULL_RUN: &[&str] = &[
     "**/build.rs",
     // nextest's workspace configuration: test filters, timeouts and retries for every package.
     ".config/nextest.toml",
+    // Checkout attributes, such as line endings, of the files below, nested members included.
+    "**/.gitattributes",
 ];
 
 /// What one changed file does to the selection.
@@ -126,6 +128,13 @@ pub fn classify(workspace: &Workspace, rules: &Rules, path: &str) -> Effect {
         .any(|file| file.eq_ignore_ascii_case(path))
     {
         return Effect::FullRun("is a Cargo configuration file".to_string());
+    }
+    if workspace
+        .nextest_files
+        .iter()
+        .any(|file| file.eq_ignore_ascii_case(path) || crate::workspace::contains(file, path))
+    {
+        return Effect::FullRun("is run by a nextest script".to_string());
     }
     if workspace
         .manifest_targets
@@ -746,6 +755,13 @@ mod tests {
         let changed = files(&["tools/tool/x.rs"]);
         let selection = select(&ws, &Rules::default(), &changed, &cycle, &[]);
         assert_eq!(selection.files.len(), 2);
+    }
+
+    #[test]
+    fn gitattributes_select_everything() {
+        let ws = workspace();
+        let changed = files(&["crates/app/.gitattributes"]);
+        assert!(select(&ws, &Rules::default(), &changed, &[], &[]).is_full());
     }
 
     #[test]

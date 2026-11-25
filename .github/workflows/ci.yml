@@ -28,6 +28,8 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
+      - name: Test the measurement script's parsers
+        run: python3 scripts/test_measure.py
 
   self:
     name: cargo tia on its own changes

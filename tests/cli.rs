@@ -3289,6 +3289,34 @@ fn nextest_configuration_selects_the_whole_workspace_despite_ignore_globs() {
 }
 
 #[test]
+fn files_that_nextest_scripts_run_select_the_whole_workspace() {
+    let repo = chain();
+    repo.write(
+        ".config/nextest.toml",
+        "[scripts.setup.db]\ncommand = \"./crates/lonely/tests/setup-db.sh --fast\"\n\n\
+         [scripts.setup.cache]\ncommand = { command-line = \"sh crates/lonely/tools/cache\", relative-to = \"workspace-root\" }\n",
+    );
+    repo.write("crates/lonely/tests/setup-db.sh", "#!/bin/sh\n");
+    repo.write("crates/lonely/tools/cache/warm.sh", "#!/bin/sh\n");
+    repo.commit("setup scripts");
+    repo.append("crates/lonely/tests/setup-db.sh", "# changed\n");
+    let json = repo.select("HEAD", &[]);
+    assert!(is_full(&json), "{json:#}");
+    assert!(json["full_reasons"][0]
+        .as_str()
+        .unwrap()
+        .contains("nextest script"));
+    // A directory that an inline-table command names.
+    repo.git(&["checkout", "-q", "--", "."]);
+    repo.append("crates/lonely/tools/cache/warm.sh", "# changed\n");
+    assert!(is_full(&repo.select("HEAD", &[])));
+    // An ordinary file of the same package selects only its package.
+    repo.git(&["checkout", "-q", "--", "."]);
+    repo.append("crates/lonely/src/lib.rs", "// changed\n");
+    assert_eq!(selected(&repo.select("HEAD", &[])), ["lonely"]);
+}
+
+#[test]
 fn a_closed_stderr_does_not_change_the_exit_status() {
     let repo = chain();
     let run = |args: &[&str]| {

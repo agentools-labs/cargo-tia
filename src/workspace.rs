@@ -43,6 +43,9 @@ pub struct Workspace {
     /// Cargo configuration files that the tool read, at the path Cargo uses and at the file it
     /// resolves to. A change to one selects the full workspace.
     pub config_files: Vec<String>,
+    /// Files and directories that the commands of nextest scripts name, from
+    /// `.config/nextest.toml`. A script can prepare the tests of any package.
+    pub nextest_files: Vec<String>,
     /// Included configuration files, each with the configuration file that includes it.
     pub config_includes: Vec<(String, String)>,
     /// Files behind member manifests that are symbolic links.
@@ -152,7 +155,41 @@ pub fn load(
         let target = relative(&workspace.root, &target);
         workspace.manifest_targets.push(target);
     }
+    workspace.nextest_files = nextest_script_files(&workspace.root);
     Ok(workspace)
+}
+
+/// The paths that the commands of nextest scripts name, relative to the workspace root: each
+/// word of a `command` or `command-line` value that holds a `/` or names a file there. What
+/// else a command reads, the tool cannot know.
+fn nextest_script_files(root: &Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(root.join(".config/nextest.toml")) else {
+        return Vec::new();
+    };
+    let commands = key_strings(&text, "command")
+        .into_iter()
+        .chain(key_values(&text, "command"))
+        .chain(key_strings(&text, "command-line"))
+        .chain(key_values(&text, "command-line"));
+    let mut files = Vec::new();
+    for command in commands {
+        for word in command.split_whitespace() {
+            let mut word = word.trim_matches(['"', '\'']);
+            while let Some(rest) = word.strip_prefix("./") {
+                word = rest;
+            }
+            if word.is_empty() || word.starts_with('-') {
+                continue;
+            }
+            let path = root.join(word);
+            if word.contains('/') || path.exists() {
+                files.push(relative(root, &normalize(&path)));
+            }
+        }
+    }
+    files.sort();
+    files.dedup();
+    files
 }
 
 /// A non-member path dependency inside the source directory of a member's target can hold

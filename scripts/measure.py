@@ -40,13 +40,13 @@ def summary_hints(stderr):
     """The rerun hints of Cargo's final summary, such as "-p foo --lib".
 
     With one failing target the summary can be the last "error: test failed, to rerun pass"
-    line; otherwise it is the "error: N targets failed:" line and the indented hints after it.
+    line ("doctest failed" for doctests); otherwise it is the "error: N targets failed:" line and the indented hints after it.
     Only the summary counts: a test can run a nested Cargo whose output comes earlier.
     """
     lines = stderr.splitlines()
     for index in range(len(lines) - 1, -1, -1):
         line = lines[index]
-        single = re.match(r"error: test failed, to rerun pass `([^`]+)`", line)
+        single = re.match(r"error: (?:doc)?test failed, to rerun pass `([^`]+)`", line)
         if single:
             return [single.group(1)]
         if re.match(r"error: \d+ targets? failed:", line):
@@ -74,11 +74,13 @@ def failing_packages(stderr):
 
 
 def not_started(stderr):
-    # Cargo reports a test binary that never started (a missing runner, say) as the cause of
-    # that target's "test failed" error. Only the targets of the final summary count.
+    # Cargo reports a test binary that never started (a missing runner or rustdoc, say) as the
+    # cause of that target's "test failed" or "doctest failed" error. Only the targets of the
+    # final summary count.
     hints = set(summary_hints(stderr))
     causes = re.findall(
-        r"^error: test failed, to rerun pass `([^`]+)`\n\nCaused by:\n  could not execute process ",
+        r"^error: (?:doc)?test failed, to rerun pass `([^`]+)`\n\nCaused by:\n"
+        r"  could not execute process ",
         stderr, re.M)
     return any(hint in hints for hint in causes)
 
@@ -88,12 +90,14 @@ def compile_failures(stderr, workspace):
     return sorted(set(re.findall(r"could not compile `([^`]+)`", stderr)) & workspace)
 
 
-def workspace_names(repo):
+def workspace_info(repo):
+    """The names of the workspace members and the workspace root."""
     metadata = json.loads(run(
         ["cargo", "metadata", "--no-deps", "--format-version", "1", "--offline"], repo
     ).stdout)
     members = set(metadata["workspace_members"])
-    return {package["name"] for package in metadata["packages"] if package["id"] in members}
+    names = {package["name"] for package in metadata["packages"] if package["id"] in members}
+    return names, metadata["workspace_root"]
 
 
 def cargo_test(args, cwd, workspace):
@@ -214,17 +218,32 @@ def main():
             if index < timed_count:
                 build = run(["cargo", "test", "--workspace", "--no-run"], repo, check=False)
                 row["build_ok"] = build.returncode == 0
-                # Tests can write files: reset the clone before each run.
-                clean = lambda: (run(["git", "reset", "-q", "--hard"], top),
-                                 run(["git", "clean", "-ffdxq"], top))
+                names, workspace_root = workspace_info(repo)
+                # The build resolved the dependencies. Cleaning deletes an untracked Cargo.lock
+                # (and resets a tracked one): put the build's lockfile back, so that every run
+                # uses the same resolution without resolving again.
+                lock_path = os.path.join(workspace_root, "Cargo.lock")
+                lock = None
+                if os.path.exists(lock_path):
+                    with open(lock_path, "rb") as handle:
+                        lock = handle.read()
+                locked = ["--locked"] if lock is not None else []
+
+                def clean():
+                    # Tests can write files: reset the repository before each run.
+                    run(["git", "reset", "-q", "--hard"], top)
+                    run(["git", "clean", "-ffdxq"], top)
+                    if lock is not None:
+                        with open(lock_path, "wb") as handle:
+                            handle.write(lock)
+
                 clean()
-                names = workspace_names(repo)
-                cargo_test(["--workspace"], repo, names)  # warm-up, untimed
+                cargo_test(["--workspace", *locked], repo, names)  # warm-up, untimed
                 clean()
-                row["full_run"] = cargo_test(["--workspace"], repo, names)
+                row["full_run"] = cargo_test(["--workspace", *locked], repo, names)
                 if data["selected"]:
                     clean()
-                    row["selected_run"] = cargo_test(data["cargo_args"], repo, names)
+                    row["selected_run"] = cargo_test([*data["cargo_args"], *locked], repo, names)
                 else:
                     row["selected_run"] = {"seconds": 0.0, "exit": 0, "compile_failures": [],
                                            "failing_packages": [], "inconclusive": False}
