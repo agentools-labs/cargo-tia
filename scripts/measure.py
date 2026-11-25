@@ -126,9 +126,15 @@ def main():
             if index < timed_count:
                 build = run(["cargo", "test", "--workspace", "--no-run"], repo, check=False)
                 row["build_ok"] = build.returncode == 0
+                # Tests can write files: reset the clone before each run.
+                clean = lambda: (run(["git", "reset", "-q", "--hard"], repo),
+                                 run(["git", "clean", "-fdxq"], repo))
+                clean()
                 cargo_test(["--workspace"], repo)  # warm-up, untimed
+                clean()
                 row["full_run"] = cargo_test(["--workspace"], repo)
                 if data["selected"]:
+                    clean()
                     row["selected_run"] = cargo_test(data["cargo_args"], repo)
                 else:
                     row["selected_run"] = {"seconds": 0.0, "exit": 0, "compile_failures": [],

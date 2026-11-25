@@ -242,8 +242,14 @@ fn needs_workspace(
         }
         // Cargo fails when no selected package has a library.
         if flag == "--lib" || flag == "--doc" {
+            // Every library kind has unit tests; only Rust libraries have doctests.
+            let kinds: &[&str] = if flag == "--lib" {
+                &["lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"]
+            } else {
+                &["lib", "rlib", "proc-macro"]
+            };
             let library = workspace.target_names.iter().any(|(kind, _, package)| {
-                matches!(kind.as_str(), "lib" | "rlib" | "dylib" | "proc-macro")
+                kinds.contains(&kind.as_str())
                     && selection.packages.iter().any(|(index, _)| index == package)
             });
             if !library {
@@ -270,7 +276,7 @@ fn needs_workspace(
         // Cargo accepts a glob as a target name; it fails when nothing selected matches.
         let selected = workspace.target_names.iter().any(|(k, n, package)| {
             k == kind
-                && crate::glob::matches(&name, n)
+                && target_matches(&name, n)
                 && selection.packages.iter().any(|(index, _)| index == package)
         });
         if !selected {
@@ -280,6 +286,47 @@ fn needs_workspace(
         }
     }
     None
+}
+
+/// Cargo's matching of target names: `*`, `?` and `[...]` classes (`[!...]` negates).
+fn target_matches(pattern: &str, name: &str) -> bool {
+    let pattern: Vec<char> = pattern.chars().collect();
+    let name: Vec<char> = name.chars().collect();
+    fn class(pattern: &[char], c: char) -> Option<(bool, usize)> {
+        // Returns whether `c` matches and the length of the class, `[` to `]` included.
+        let end = pattern.iter().skip(1).position(|&p| p == ']')? + 1;
+        let (negated, body) = match pattern.get(1) {
+            Some('!') | Some('^') => (true, &pattern[2..end]),
+            _ => (false, &pattern[1..end]),
+        };
+        let mut found = false;
+        let mut i = 0;
+        while i < body.len() {
+            if i + 2 < body.len() && body[i + 1] == '-' {
+                found |= body[i] <= c && c <= body[i + 2];
+                i += 3;
+            } else {
+                found |= body[i] == c;
+                i += 1;
+            }
+        }
+        Some((found != negated, end + 1))
+    }
+    fn go(pattern: &[char], name: &[char]) -> bool {
+        match pattern.first() {
+            None => name.is_empty(),
+            Some('*') => (0..=name.len()).any(|skip| go(&pattern[1..], &name[skip..])),
+            Some('?') => !name.is_empty() && go(&pattern[1..], &name[1..]),
+            Some('[') => match (class(pattern, *name.first().unwrap_or(&'\0')), name.first()) {
+                (Some((true, length)), Some(_)) => go(&pattern[length..], &name[1..]),
+                (Some(_), _) => false,
+                (None, Some(&'[')) => go(&pattern[1..], &name[1..]),
+                (None, _) => false,
+            },
+            Some(&p) => name.first() == Some(&p) && go(&pattern[1..], &name[1..]),
+        }
+    }
+    go(&pattern, &name)
 }
 
 /// A configuration option for the test command can change settings for every package: Cargo's
@@ -682,6 +729,44 @@ mod tests {
                 "{args:?}"
             );
         }
+    }
+
+    #[test]
+    fn doctests_need_a_rust_library_and_lib_tests_any_library() {
+        let package = |name: &str| workspace::Package {
+            name: name.to_string(),
+            dir: name.to_string(),
+            deps: Vec::new(),
+            external: false,
+        };
+        let ws = Workspace {
+            packages: vec![package("native"), package("other")],
+            target_names: vec![
+                ("dylib".to_string(), "native".to_string(), 0),
+                ("lib".to_string(), "other".to_string(), 1),
+            ],
+            ..Workspace::default()
+        };
+        let selection = Selection {
+            full_reasons: Vec::new(),
+            files: Vec::new(),
+            packages: vec![(0, Reason::Changed)],
+        };
+        let with = |arg: &str| parse_ok(&["test", "--", arg]);
+        assert!(needs_workspace(&ws, &selection, &with("--doc")).is_some());
+        assert!(needs_workspace(&ws, &selection, &with("--lib")).is_none());
+    }
+
+    #[test]
+    fn target_patterns_match_like_cargo() {
+        assert!(target_matches("smoke", "smoke"));
+        assert!(target_matches("smoke*", "smoke_api"));
+        assert!(target_matches("smoke[12]", "smoke1"));
+        assert!(!target_matches("smoke[12]", "smoke3"));
+        assert!(target_matches("smoke[!12]", "smoke3"));
+        assert!(target_matches("smoke[0-9]", "smoke7"));
+        assert!(target_matches("t?st", "test"));
+        assert!(!target_matches("smoke", "smoke_api"));
     }
 
     #[test]
