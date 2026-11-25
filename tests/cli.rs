@@ -2228,6 +2228,49 @@ fn committed_only_distrusts_a_linked_workspace_manifest() {
     assert!(is_full(&json), "{json:#}");
 }
 
+#[test]
+fn untracked_files_in_a_submodule_count() {
+    let sub = Repo::new("sub-untracked");
+    sub.write("data.txt", "1\n");
+    sub.commit("data");
+    let repo = chain();
+    repo.git(&[
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        sub.dir.to_str().unwrap(),
+        "crates/lonely/vendor",
+    ]);
+    repo.commit("submodule");
+    let inner = Repo {
+        dir: repo.path("crates/lonely/vendor"),
+    };
+    inner.git(&["config", "status.showUntrackedFiles", "no"]);
+    inner.write("tests/smoke.rs", "#[test] fn t() {}\n");
+    let json = repo.select("HEAD", &[]);
+    assert!(is_full(&json), "{json:#}");
+}
+
+#[cfg(unix)]
+#[test]
+fn hidden_owner_execute_bit_changes_count() {
+    use std::os::unix::fs::PermissionsExt;
+    let repo = chain();
+    let helper = repo.path("crates/lonely/tests/helper.sh");
+    repo.write("crates/lonely/tests/helper.sh", "#!/bin/sh\n");
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+    repo.commit("helper");
+    repo.git(&[
+        "update-index",
+        "--assume-unchanged",
+        "crates/lonely/tests/helper.sh",
+    ]);
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o655)).unwrap();
+    assert_eq!(selected(&repo.select("HEAD", &[])), ["lonely"]);
+}
+
 /// A small deterministic generator, so the property test needs no extra crate.
 struct Rng(u64);
 
