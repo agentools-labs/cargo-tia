@@ -35,6 +35,8 @@ pub struct Workspace {
     /// Source replacement directories (`directory` and `local-registry` in Cargo
     /// configuration). Registry packages from there can reach any member.
     pub source_dirs: Vec<String>,
+    /// Cargo configuration files that other configuration files include.
+    pub config_files: Vec<String>,
     /// Build scripts of the members, relative to the workspace root.
     pub build_scripts: Vec<String>,
     /// Target source files of the members, with the index of the member that declares each.
@@ -83,8 +85,10 @@ pub fn load(cargo: &OsStr, manifest_path: Option<&Path>) -> Result<Workspace, St
         patched,
         others,
         sources,
+        includes,
     } = overrides(&workspace);
     workspace.source_dirs = sources;
+    workspace.config_files = includes;
     // A local patch that is not a member is a path dependency of every member that has a
     // registry or git dependency: one of those can resolve to it. It can also depend on any
     // member, so every member counts as patched.
@@ -225,6 +229,8 @@ struct Overrides {
     others: Vec<String>,
     /// Source replacement directories.
     sources: Vec<String>,
+    /// Included configuration files.
+    includes: Vec<String>,
 }
 
 /// Reads the workspace manifest and the Cargo configuration files that Cargo reads for this
@@ -252,6 +258,7 @@ fn overrides(workspace: &Workspace) -> Overrides {
         }
     }
     let (mut patched, mut others, mut sources) = (Vec::new(), Vec::new(), Vec::new());
+    let mut includes = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
     while let Some((file, base)) = files.pop() {
         if !seen.insert(file.clone()) {
@@ -265,7 +272,9 @@ fn overrides(workspace: &Workspace) -> Overrides {
             paths.extend(key_strings(&text, "paths"));
             let dir = file.parent().unwrap_or(root).to_path_buf();
             for include in key_strings(&text, "include") {
-                files.push((dir.join(include), base.clone()));
+                let included = normalize(&dir.join(include));
+                includes.push(relative(root, &included));
+                files.push((included, base.clone()));
             }
             for key in ["directory", "local-registry"] {
                 for source in key_strings(&text, key) {
@@ -287,10 +296,13 @@ fn overrides(workspace: &Workspace) -> Overrides {
     others.dedup();
     sources.sort();
     sources.dedup();
+    includes.sort();
+    includes.dedup();
     Overrides {
         patched,
         others,
         sources,
+        includes,
     }
 }
 

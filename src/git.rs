@@ -148,8 +148,10 @@ pub fn changed_files(
         (paths, special) = diff(&[&merge_base])?;
         let new_files = untracked()?;
         for path in &new_files {
-            if std::fs::symlink_metadata(toplevel.join(path)).is_ok_and(|m| m.is_symlink()) {
-                special.push(path.clone());
+            // A path that ends with `/` is a nested repository: git does not list its files.
+            let link = std::fs::symlink_metadata(toplevel.join(path)).is_ok_and(|m| m.is_symlink());
+            if link || path.ends_with('/') {
+                special.push(path.trim_end_matches('/').to_string());
             }
         }
         paths.extend(new_files);
@@ -217,7 +219,8 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
         .arg("-C")
         .arg(dir)
         // A file system monitor hook can run any program and can report stale results.
-        .args(["-c", "core.fsmonitor=false"])
+        // A change of the executable bit can change a test, so always compare it.
+        .args(["-c", "core.fsmonitor=false", "-c", "core.fileMode=true"])
         .args(args)
         // A partial clone must not fetch missing objects: the command fails instead.
         // GIT_NO_LAZY_FETCH needs git 2.45; denying every transport covers older versions.

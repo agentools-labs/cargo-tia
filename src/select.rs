@@ -110,6 +110,9 @@ pub fn classify(workspace: &Workspace, rules: &Rules, path: &str) -> Effect {
     if workspace.build_scripts.iter().any(|script| script == path) {
         return Effect::FullRun("is a build script".to_string());
     }
+    if workspace.config_files.iter().any(|file| file == path) {
+        return Effect::FullRun("is an included Cargo configuration file".to_string());
+    }
     if workspace
         .source_dirs
         .iter()
@@ -212,7 +215,7 @@ pub fn select(
     reached.sort();
     for (path, link_to) in reached {
         let effect = if special.contains(&path) {
-            Effect::FullRun("is a symbolic link or a submodule".to_string())
+            Effect::FullRun("is a symbolic link, a submodule or a nested repository".to_string())
         } else {
             classify(workspace, rules, &path)
         };

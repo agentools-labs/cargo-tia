@@ -679,11 +679,24 @@ fn test_runs_cargo_test_only_on_the_selection() {
         "crates/lonely/src/lib.rs",
         "#[test]\nfn lonely_fails() { panic!(\"lonely is broken\"); }\n",
     );
+    repo.append(
+        "crates/mid/src/lib.rs",
+        "#[test]\nfn mid_runs() { assert_eq!(f(), 1); }\n",
+    );
     repo.commit("tests");
 
     repo.append("crates/mid/src/lib.rs", "// changed\n");
     let output = repo.tia(&["tia", "test", "--base", "HEAD"]);
     assert!(output.status.success(), "{}", stderr(&output));
+    assert!(
+        stdout(&output).contains("test mid_runs ... ok"),
+        "{}",
+        stdout(&output)
+    );
+    assert!(
+        !stdout(&output).contains("core_works"),
+        "core is not selected"
+    );
     assert!(
         stderr(&output).contains("selected: 2 of 6 packages"),
         "{}",
@@ -1463,6 +1476,76 @@ fn source_replacement_directories_select_the_whole_workspace() {
     repo.append("crates/lonely/vendor/widget/src/lib.rs", "// changed\n");
     let json = repo.select("HEAD", &[]);
     assert!(is_full(&json), "{json:#}");
+}
+
+#[test]
+fn path_dependency_target_inside_a_member_reaches_the_users() {
+    let repo = chain();
+    repo.append("Cargo.toml", "exclude = [\"vendor\"]\n");
+    repo.write("crates/core/src/compat.rs", "pub fn c() {}\n");
+    repo.write(
+        "vendor/shim/Cargo.toml",
+        "[package]\nname = \"shim\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\npath = \"../../crates/core/src/compat.rs\"\n",
+    );
+    use_vendor_crate(&repo, "lonely", "shim");
+    repo.commit("shim library inside core");
+    // The file belongs to core; lonely uses it through the shim.
+    repo.append("crates/core/src/compat.rs", "// changed\n");
+    assert!(selected(&repo.select("HEAD", &[])).contains(&"lonely".to_string()));
+}
+
+#[test]
+fn included_config_files_select_the_whole_workspace() {
+    let repo = chain();
+    repo.write(
+        "crates/app/.cargo/config.toml",
+        "include = [\"patches.toml\"]\n",
+    );
+    repo.write("crates/app/.cargo/patches.toml", "[env]\nX = \"1\"\n");
+    repo.commit("member config");
+    repo.append("crates/app/.cargo/patches.toml", "Y = \"2\"\n");
+    let output = repo.tia_in(
+        &repo.path("crates/app"),
+        &["list", "--json", "--base", "HEAD"],
+    );
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(is_full(&json), "{json:#}");
+}
+
+#[test]
+fn nested_repositories_select_the_whole_workspace() {
+    let repo = chain();
+    let nested = Repo {
+        dir: repo.path("crates/lonely/vendor/shim"),
+    };
+    fs::create_dir_all(&nested.dir).unwrap();
+    nested.git(&["init", "-q", "-b", "main"]);
+    nested.write("src/lib.rs", "pub fn s() {}\n");
+    nested.commit("independent checkout");
+    // Git lists the checkout as one directory entry and hides its files.
+    let json = repo.select("HEAD", &[]);
+    assert!(is_full(&json), "{json:#}");
+}
+
+#[cfg(unix)]
+#[test]
+fn executable_bit_changes_count_even_when_git_ignores_them() {
+    use std::os::unix::fs::PermissionsExt;
+    let repo = chain();
+    repo.write("crates/lonely/tests/run.sh", "#!/bin/sh\n");
+    fs::set_permissions(
+        repo.path("crates/lonely/tests/run.sh"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    repo.commit("script");
+    repo.git(&["config", "core.fileMode", "false"]);
+    fs::set_permissions(
+        repo.path("crates/lonely/tests/run.sh"),
+        fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+    assert_eq!(selected(&repo.select("HEAD", &[])), ["lonely"]);
 }
 
 /// A small deterministic generator, so the property test needs no extra crate.
