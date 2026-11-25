@@ -2174,7 +2174,11 @@ fn reverted_working_tree_files_select_nothing() {
 #[test]
 fn paths_override_at_a_member_covers_crates_below_it() {
     let repo = chain();
-    repo.append("Cargo.toml", "exclude = [\"crates/lonely/vendor\"]\n");
+    // With a glob in `members`, Cargo honors the exclusion: uuid is not a member.
+    repo.write(
+        "Cargo.toml",
+        "[workspace]\nresolver = \"2\"\nmembers = [\"crates/*\"]\nexclude = [\"crates/lonely/vendor\"]\n",
+    );
     repo.write(".cargo/config.toml", "paths = [\"crates/lonely\"]\n");
     vendor_crate(&repo, "crates/lonely/vendor/uuid", &[]);
     // builder uses uuid directly; tester uses a registry uuid that the override replaces.
@@ -2193,7 +2197,12 @@ fn paths_override_at_a_member_covers_crates_below_it() {
     );
     repo.commit("override");
     repo.append("crates/lonely/vendor/uuid/src/lib.rs", "// changed\n");
-    let got = selected(&repo.select("HEAD", &[]));
+    let json = repo.select("HEAD", &[]);
+    assert_eq!(
+        json["workspace_packages"], 6,
+        "uuid is not a member: {json:#}"
+    );
+    let got = selected(&json);
     assert!(
         got.contains(&"builder".to_string()) && got.contains(&"tester".to_string()),
         "{got:?}"

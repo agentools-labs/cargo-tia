@@ -105,7 +105,8 @@ Arguments after `--` go to the test command. They must not change the packages: 
      dependencies depends on that member: those dependencies can depend on it. A local patch path
      that is not a member counts as every member, and it is a path dependency of each member with
      registry or git dependencies. Cargo `paths` overrides count the same way, for every member below
-     the override directory.
+     the override directory, and the override directory counts as a local patch path, also when it
+     is a member.
 
    The tool reads patches and overrides as text from the workspace manifest, from the Cargo
    configuration files in the workspace root, the current directory, their parents and `CARGO_HOME`,
