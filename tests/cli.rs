@@ -2737,6 +2737,28 @@ fn a_restored_file_that_became_a_link_counts() {
     assert!(is_full(&json), "{json:#}");
 }
 
+#[cfg(unix)]
+#[test]
+fn a_hidden_file_that_became_a_link_counts() {
+    let repo = chain();
+    repo.write("shared/helper.sh", "#!/bin/sh\n");
+    repo.write("crates/lonely/tests/helper.sh", "#!/bin/sh\n");
+    repo.commit("helpers");
+    repo.git(&[
+        "update-index",
+        "--assume-unchanged",
+        "crates/lonely/tests/helper.sh",
+    ]);
+    fs::remove_file(repo.path("crates/lonely/tests/helper.sh")).unwrap();
+    // Same bytes through the link, so only the file type tells the change.
+    std::os::unix::fs::symlink(
+        "../../../shared/helper.sh",
+        repo.path("crates/lonely/tests/helper.sh"),
+    )
+    .unwrap();
+    assert_eq!(selected(&repo.select("HEAD", &[])), ["lonely"]);
+}
+
 #[test]
 fn sparse_checkouts_that_leave_out_files_select_the_whole_workspace() {
     let repo = chain();
