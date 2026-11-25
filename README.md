@@ -43,16 +43,19 @@ selected: 3 of 10 packages
 A commit that changes a file outside every package selects the full workspace:
 
 ```text
-$ cargo tia --committed --base 4a51093^1
-base: 4a51093^1 (merge base 669cb4c755db)
+$ cargo tia --committed --base 0856f39^1
+base: 0856f39^1 (merge base 9c49a2589445)
 changed files: 1
-  pkg/brew/ripgrep-bin.rb  full run: outside every package
+  .github/workflows/release.yml  full run: outside every package
 selected: full workspace, 10 packages
-  because `pkg/brew/ripgrep-bin.rb` is outside every package
+  because `.github/workflows/release.yml` is outside every package
 ```
 
+To skip such files, add an ignore glob, for example `--ignore '.github/**'` (see [Configure](#configure)).
+
 The cargo arguments are `--workspace` for the full workspace. For a partial selection they are
-`--workspace` plus `--exclude NAME` for each package that is not selected. `-p NAME` is not used: it is
+`--workspace` plus `--exclude NAME` for each package that is not selected. They start with
+`--manifest-path PATH` when you give one. `-p NAME` is not used: it is
 ambiguous when a dependency has the same name and version as a member, which happens in real workspaces
 (tracing is one). `--exclude` matches workspace members only.
 
@@ -66,8 +69,9 @@ rejects `-p`, `--package`, `--workspace`, `--exclude` and `--manifest-path` ther
 1. It finds the merge base of the base revision and `HEAD`. The default base is `origin/HEAD`. When
    `origin/HEAD` is not set, the tool does not guess a branch: pass `--base`.
 2. It lists the files that changed since the merge base. The list includes staged, unstaged and
-   untracked files, files marked assume-unchanged, and moved submodules, whatever the git
-   configuration hides. With `--committed`, it includes only committed changes.
+   untracked files, and edits to files marked assume-unchanged or skip-worktree. Git configuration
+   such as `diff.ignoreSubmodules` cannot hide a change. With `--committed`, the list includes only
+   committed changes.
 3. It reads the workspace with `cargo metadata --no-deps --offline`.
 4. It gives each changed file one effect, in this order:
    - **Full run**: the file matches a built-in or configured full-run glob, or it is a build script.
@@ -78,10 +82,13 @@ rejects `-p`, `--package`, `--workspace`, `--exclude` and `--manifest-path` ther
    - **Outside**: the file is in no package. This selects the full workspace.
 
    A changed file that a tracked symbolic link points to also changes the package that holds the link.
+   The report shows that path with `(link to ...)`.
 5. It selects the changed packages and every member that depends on them, directly or through other
-   members. Normal, dev, build, optional and target-specific dependencies all count. A member that uses
-   a path dependency outside the workspace counts as a dependent of every member, because Cargo does
-   not report the dependencies of that path dependency.
+   members. Normal, dev, build, optional and target-specific dependencies all count. Cargo does not
+   report every edge, so two kinds of members count as dependents of every member:
+   - a member that uses a path dependency that is not a member;
+   - when the workspace manifest or a Cargo configuration file has a `[patch]` or `[replace]` table,
+     a member with registry or git dependencies, because those can depend on a patched member.
 
 These changes select the full workspace:
 
@@ -89,6 +96,9 @@ These changes select the full workspace:
   unifies for other packages, so it counts as a workspace file.
 - `rust-toolchain`, `rust-toolchain.toml`, `.cargo/config` and `.cargo/config.toml`, at any depth.
 - `build.rs` at any depth, and each build script that `cargo metadata` reports.
+- A changed symbolic link or submodule. Its effect on other paths is unknown.
+- A file in a directory that holds a target of another member, for example
+  `[[test]] path = "../other/check.rs"`.
 - A file outside every package, for example a root `README.md`, `.github/` or `scripts/`. A package at
   the workspace root owns only the top-level entries that hold its targets, such as `src/` and
   `tests/`.
@@ -96,8 +106,10 @@ These changes select the full workspace:
 - Any case where git cannot give a single change set: no merge base (for example in a shallow clone),
   more than one merge base (criss-cross merges), an unknown base, no `origin/HEAD` and no `--base`, or no
   repository.
-- With `--committed`: an uncommitted change to a `Cargo.toml`. The tool reads the workspace from the
-  working tree, so the working tree must match `HEAD` there.
+- A path dependency outside the git repository. Git cannot see its changes.
+- With `--committed`: a `Cargo.toml` with uncommitted changes, or one that git hides with
+  assume-unchanged or skip-worktree. The tool reads the workspace from the working tree, so the
+  working tree must match `HEAD` there.
 
 A dependency on a registry package with the same name as a member also counts as an edge to that
 member, because `[patch]` can redirect it. This can select too much, never too little.
@@ -133,12 +145,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0  # the merge base must be in the clone
+          fetch-depth: 2  # the merge commit and its parents
       - run: cargo install --locked --git https://github.com/agentools-labs/cargo-tia
-      - run: cargo tia test --base "origin/$BASE_REF"
-        env:
-          BASE_REF: ${{ github.base_ref }}
+      - run: cargo tia test --base HEAD^1
 ```
+
+For a pull request, `actions/checkout` checks out a merge commit. Its first parent, `HEAD^1`, is the
+target branch at that time, so the selection covers exactly the changes of the pull request, also when
+the workflow runs again later. `origin/HEAD` is not set in this checkout, so pass `--base`.
 
 This repository uses the tool on itself in [its CI workflow](.github/workflows/ci.yml).
 
@@ -153,8 +167,9 @@ This repository uses the tool on itself in [its CI workflow](.github/workflows/c
   the `--workspace` build. Run the full workspace on the default branch to catch this.
 - Any `Cargo.lock` change selects the full workspace. The tool does not compare the lockfile per
   package.
-- With git older than 2.44, git can fetch missing objects in a partial clone. Newer git fails instead,
-  and the tool then selects the full workspace.
+- In a partial clone, git 2.45 and newer cannot fetch missing objects for the tool: the command fails
+  and the tool selects the full workspace. Older git also gets no transport, through
+  `GIT_ALLOW_PROTOCOL`.
 - Windows is not tested.
 
 ## Measurements

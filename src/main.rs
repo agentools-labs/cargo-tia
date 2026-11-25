@@ -321,7 +321,18 @@ fn report(workspace: &Workspace, base: &Base, selection: &Selection) -> String {
         Base::Unknown(None) => out += "base: unknown\n",
     }
     if !selection.files.is_empty() {
-        out += &format!("changed files: {}\n", selection.files.len());
+        let direct = selection
+            .files
+            .iter()
+            .filter(|file| file.link_to.is_none())
+            .count();
+        out += &format!("changed files: {direct}");
+        let linked = selection.files.len() - direct;
+        if linked > 0 {
+            let paths = if linked == 1 { "path" } else { "paths" };
+            out += &format!(", and {linked} more {paths} through symbolic links");
+        }
+        out += "\n";
         let width = selection
             .files
             .iter()

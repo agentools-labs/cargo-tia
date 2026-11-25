@@ -33,12 +33,14 @@ jobs:
     name: cargo tia on its own changes
     runs-on: ubuntu-latest
     env:
-      # Pull requests compare with their target branch; pushes with the previous tip.
-      BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
+      # A pull request checks out a merge commit whose first parent is the target branch.
+      # A push compares with the previous tip.
+      BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || github.event.before }}
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0
+          # The merge commit and its parents are enough for a pull request.
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 0 }}
       - name: Install the stable toolchain
         run: |
           rustup toolchain install stable --profile minimal

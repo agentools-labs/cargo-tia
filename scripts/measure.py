@@ -10,7 +10,9 @@ it builds the workspace tests, then times `cargo test --workspace --no-fail-fast
 each run. A package that fails in the full run but is not selected is a missed failure. A
 full run that fails to compile, or exits non-zero without naming a failing package, makes
 the commit inconclusive.
-Set CARGO_TARGET_DIR to keep build output out of the shared target directory.
+Run it in a clean, disposable clone: it checks out each commit (detached) and then returns to
+the starting branch or commit. Set CARGO_TARGET_DIR to keep build output out of the shared
+target directory.
 """
 
 import json
@@ -53,7 +55,10 @@ def cargo_test(args, cwd):
 def main():
     tia, repo, select_count, timed_count, out = sys.argv[1:6]
     select_count, timed_count = int(select_count), int(timed_count)
+    if run(["git", "status", "--porcelain"], repo).stdout.strip():
+        raise SystemExit(f"{repo} has uncommitted changes; use a clean clone")
     start_ref = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+    branch = run(["git", "symbolic-ref", "-q", "--short", "HEAD"], repo, check=False).stdout.strip()
     commits = run(
         ["git", "rev-list", "--first-parent", "-n", str(select_count), start_ref], repo
     ).stdout.split()
@@ -88,14 +93,17 @@ def main():
                                            "failing_packages": [], "inconclusive": False}
                 selected = set(row["selected"])
                 full = row["full_run"]
-                row["missed_failures"] = [
-                    p for p in full["failing_packages"] + full["compile_failures"]
-                    if p not in selected
+                # Unknown when the full run is inconclusive: a compile failure can belong to a
+                # dependency that no selection contains.
+                row["missed_failures"] = None if full["inconclusive"] else [
+                    p for p in full["failing_packages"] if p not in selected
                 ]
             rows.append(row)
             print(json.dumps(row), flush=True)
     finally:
-        run(["git", "checkout", "-q", "--detach", start_ref], repo, check=False)
+        restore = ["git", "checkout", "-q", branch] if branch else [
+            "git", "checkout", "-q", "--detach", start_ref]
+        run(restore, repo, check=False)
         with open(out, "w") as handle:
             json.dump(rows, handle, indent=2)
 
