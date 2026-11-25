@@ -3095,9 +3095,9 @@ fn a_reader_that_closes_the_pipe_early_ends_the_output_quietly() {
     use std::io::Read;
     use std::process::Stdio;
     let repo = chain();
-    // Enough files that the report does not fit in a pipe buffer.
-    for i in 0..400 {
-        repo.write(&format!("crates/lonely/src/f{i:03}.rs"), "\n");
+    // Enough files that the report does not fit in a pipe buffer (64 KiB on Linux and macOS).
+    for i in 0..4000 {
+        repo.write(&format!("crates/lonely/src/f{i:04}.rs"), "\n");
     }
     for args in [
         &["tia", "list", "--base", "HEAD"][..],
