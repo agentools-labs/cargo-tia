@@ -308,8 +308,9 @@ fn with_target_spec(workspace: &Workspace, options: &Options) -> Rules {
         let Some(value) = value else {
             continue;
         };
+        // A target specification file: also when it was deleted, which Cargo then reports.
         let file = cwd.join(&value);
-        if file.is_file() {
+        if file.is_file() || value.ends_with(".json") {
             let path = workspace::relative(&workspace.root, &workspace::normalize(&file));
             rules.full_run.push(path);
         }

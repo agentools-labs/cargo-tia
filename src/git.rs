@@ -415,6 +415,8 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
         .args(["-c", "diff.autoRefreshIndex=true"])
         // Untracked files make a submodule changed; submodule status must not hide them.
         .args(["-c", "status.showUntrackedFiles=normal"])
+        // An ambiguous revision name must warn, so that it counts as unknown.
+        .args(["-c", "core.warnAmbiguousRefs=true"])
         .args(args)
         // A partial clone must not fetch missing objects: the command fails instead.
         // GIT_NO_LAZY_FETCH needs git 2.45; denying every transport covers older versions.

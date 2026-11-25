@@ -2864,6 +2864,78 @@ fn an_ambiguous_base_selects_the_whole_workspace() {
         is_full(&json),
         "a branch and a tag share the name: {json:#}"
     );
+    repo.git(&["config", "core.warnAmbiguousRefs", "false"]);
+    let json = repo.select("release", &[]);
+    assert!(
+        is_full(&json),
+        "also when git is told not to warn: {json:#}"
+    );
+}
+
+#[test]
+fn deleting_a_binary_inside_a_path_dependency_reaches_its_package() {
+    let repo = chain();
+    // app discovers src/bin/demo/main.rs; the same directory holds an excluded crate of lonely.
+    repo.write(
+        "Cargo.toml",
+        "[workspace]\nresolver = \"2\"\nmembers = [\"crates/*\"]\nexclude = [\"crates/app/src/bin/demo\"]\n",
+    );
+    fs::remove_file(repo.path("crates/app/src/lib.rs")).unwrap();
+    repo.write("crates/app/src/bin/other/main.rs", "fn main() {}\n");
+    repo.write("crates/app/src/bin/demo/main.rs", "fn main() {}\n");
+    repo.write(
+        "crates/app/src/bin/demo/Cargo.toml",
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[lib]\npath = \"lib.rs\"\n",
+    );
+    repo.write("crates/app/src/bin/demo/lib.rs", "pub fn d() {}\n");
+    let lonely = fs::read_to_string(repo.path("crates/lonely/Cargo.toml")).unwrap();
+    repo.write(
+        "crates/lonely/Cargo.toml",
+        &lonely.replace(
+            "[dependencies]\n",
+            "[dependencies]\ndemo = { path = \"../app/src/bin/demo\" }\n",
+        ),
+    );
+    repo.commit("binary next to an excluded crate");
+    fs::remove_file(repo.path("crates/app/src/bin/demo/main.rs")).unwrap();
+    let json = repo.select("HEAD", &[]);
+    assert!(selected(&json).contains(&"app".to_string()), "{json:#}");
+}
+
+#[test]
+fn a_deleted_target_specification_selects_the_whole_workspace() {
+    let repo = chain();
+    repo.write("crates/lonely/targets/custom.json", "{}\n");
+    repo.commit("target spec");
+    fs::remove_file(repo.path("crates/lonely/targets/custom.json")).unwrap();
+    fs::write(
+        repo.path(".git/info/exclude"),
+        "fake-cargo.sh\ncargo-calls.log\n",
+    )
+    .unwrap();
+    let cargo = fake_cargo(&repo);
+    let output = isolated(Command::new(BIN))
+        .current_dir(&repo.dir)
+        .env("CARGO", &cargo)
+        .args([
+            "tia",
+            "test",
+            "--base",
+            "HEAD",
+            "--ignore",
+            "**/*.json",
+            "--",
+            "--target",
+            "crates/lonely/targets/custom.json",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    let calls = fs::read_to_string(repo.path("cargo-calls.log")).unwrap();
+    assert_eq!(
+        calls,
+        "test --workspace --target crates/lonely/targets/custom.json\n"
+    );
 }
 
 /// A small deterministic generator, so the property test needs no extra crate.

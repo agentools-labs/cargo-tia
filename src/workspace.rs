@@ -147,8 +147,27 @@ pub fn load(cargo: &OsStr, manifest_path: Option<&Path>) -> Result<Workspace, St
 /// A non-member path dependency inside the source directory of a member's target can hold
 /// modules of that target, so the member counts as one of its users.
 fn add_nested_users(workspace: &mut Workspace) {
-    for (src, declarer) in &workspace.targets {
-        let source_dir = src.rsplit_once('/').map_or("", |(dir, _)| dir);
+    // The source directories of the targets, and the directories where Cargo discovers
+    // targets: a target there can be deleted, and then metadata no longer shows it.
+    let mut source_dirs: Vec<(String, usize)> = workspace
+        .targets
+        .iter()
+        .map(|(src, declarer)| {
+            let dir = src.rsplit_once('/').map_or("", |(dir, _)| dir);
+            (dir.to_string(), *declarer)
+        })
+        .collect();
+    for (index, package) in workspace.packages.iter().enumerate() {
+        for standard in ["src", "tests", "examples", "benches"] {
+            let dir = if package.dir.is_empty() {
+                standard.to_string()
+            } else {
+                format!("{}/{standard}", package.dir)
+            };
+            source_dirs.push((dir, index));
+        }
+    }
+    for (source_dir, declarer) in &source_dirs {
         for (dir, users) in &mut workspace.foreign {
             if contains(source_dir, dir) && !users.contains(declarer) {
                 users.push(*declarer);

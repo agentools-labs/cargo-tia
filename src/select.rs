@@ -214,9 +214,13 @@ pub fn select(
                 {
                     link.clone()
                 } else {
-                    let Some(rest) = path.strip_prefix(target.as_str()) else {
+                    // Without regard to case: on a case-insensitive file system a link reaches
+                    // its target under any spelling.
+                    let lower = path.to_ascii_lowercase();
+                    if !lower.starts_with(&target.to_ascii_lowercase()) {
                         continue;
-                    };
+                    }
+                    let rest = &path[target.len()..];
                     if !(rest.is_empty() || rest.starts_with('/')) {
                         continue;
                     }
@@ -566,6 +570,18 @@ mod tests {
         };
         let selection = select(&ws, &ignore, &files(&["fixtures/a.json"]), &links, &[]);
         assert_eq!(names(&ws, &selection), ["app", "mid"]);
+        // Any letter case reaches through the link.
+        let selection = select(
+            &ws,
+            &Rules::default(),
+            &files(&["Tools/Tool/src/shared.rs"]),
+            &links,
+            &[],
+        );
+        assert!(selection
+            .files
+            .iter()
+            .any(|f| f.path == "crates/app/src/shared.rs"));
         // A prefix that is not a whole path segment does not reach through the link.
         let selection = select(
             &ws,
