@@ -890,9 +890,14 @@ fn files_next_to_a_target_of_another_package_select_the_whole_workspace() {
         "crates/app/Cargo.toml",
         &(manifest + "\n[[test]]\nname = \"check\"\npath = \"../lonely/checks/check.rs\"\n"),
     );
-    repo.write("crates/lonely/checks/check.rs", "#[test] fn t() {}\n");
+    repo.write(
+        "crates/lonely/checks/check.rs",
+        "mod helper;\n#[test] fn t() {}\n",
+    );
+    repo.write("crates/lonely/checks/helper.rs", "pub fn h() {}\n");
     repo.commit("cross target");
-    repo.append("crates/lonely/checks/check.rs", "// changed\n");
+    // A module of the target, not the target file itself.
+    repo.append("crates/lonely/checks/helper.rs", "// changed\n");
     let json = repo.select("HEAD", &[]);
     assert!(is_full(&json), "app compiles this file: {json:#}");
     // Other files of lonely still select lonely only.
@@ -1337,6 +1342,94 @@ fn link_to_the_workspace_root_reaches_every_file() {
     repo.append("crates/lonely/src/lib.rs", "// changed\n");
     let json = repo.select("HEAD", &[]);
     assert_eq!(selected(&json), ["app", "lonely"], "{json:#}");
+}
+
+#[test]
+fn local_patch_used_through_a_path_dependency() {
+    let repo = chain();
+    repo.append(
+        "Cargo.toml",
+        "exclude = [\"vendor\"]\n\n[patch.crates-io]\nwidget = { path = \"vendor/widget\" }\n",
+    );
+    vendor_crate(&repo, "vendor/widget", &[]);
+    // shim, not a member, uses a registry package that can resolve to widget.
+    repo.write(
+        "vendor/shim/Cargo.toml",
+        "[package]\nname = \"shim\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nwidget-user = \"1\"\n",
+    );
+    repo.write("vendor/shim/src/lib.rs", "pub fn s() {}\n");
+    use_vendor_crate(&repo, "lonely", "shim");
+    repo.commit("patch used through shim");
+    repo.append("vendor/widget/src/lib.rs", "// changed\n");
+    assert!(selected(&repo.select("HEAD", &[])).contains(&"lonely".to_string()));
+}
+
+#[test]
+fn deleted_skip_worktree_files_count_without_sparse_checkout() {
+    let repo = chain();
+    repo.write("crates/lonely/src/parser.rs", "pub fn p() {}\n");
+    repo.commit("parser");
+    repo.git(&[
+        "update-index",
+        "--skip-worktree",
+        "crates/lonely/src/parser.rs",
+    ]);
+    fs::remove_file(repo.path("crates/lonely/src/parser.rs")).unwrap();
+    assert_eq!(selected(&repo.select("HEAD", &[])), ["lonely"]);
+    // In a sparse checkout, missing skip-worktree files are expected.
+    repo.git(&["config", "core.sparseCheckout", "true"]);
+    assert!(selected(&repo.select("HEAD", &[])).is_empty());
+}
+
+#[test]
+fn path_dependency_target_outside_the_repository_selects_the_whole_workspace() {
+    let outside = Repo::new("outside-lib");
+    outside.write("lib.rs", "pub fn o() {}\n");
+    let repo = chain();
+    repo.append("Cargo.toml", "exclude = [\"vendor\"]\n");
+    repo.write(
+        "vendor/shim/Cargo.toml",
+        &format!(
+            "[package]\nname = \"shim\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\npath = {:?}\n",
+            outside.path("lib.rs").display().to_string()
+        ),
+    );
+    use_vendor_crate(&repo, "lonely", "shim");
+    repo.commit("shim with an outside lib");
+    let json = repo.select("HEAD", &[]);
+    assert!(is_full(&json), "{json:#}");
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_to_a_file_outside_the_repository_selects_the_whole_workspace() {
+    let outside = Repo::new("outside-link");
+    outside.write("generated.rs", "pub fn g() {}\n");
+    let repo = chain();
+    std::os::unix::fs::symlink(
+        outside.path("generated.rs"),
+        repo.path("crates/app/src/generated.rs"),
+    )
+    .unwrap();
+    repo.commit("outside link");
+    let json = repo.select("HEAD", &[]);
+    assert!(is_full(&json), "{json:#}");
+}
+
+#[test]
+fn quoted_build_key_of_a_path_dependency_selects_the_whole_workspace() {
+    let repo = chain();
+    repo.append("Cargo.toml", "exclude = [\"vendor\"]\n");
+    repo.write(
+        "vendor/shim/Cargo.toml",
+        "[package]\nname = \"shim\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\"build\" = \"generate.rs\"\n",
+    );
+    repo.write("vendor/shim/src/lib.rs", "pub fn s() {}\n");
+    repo.write("vendor/shim/generate.rs", "fn main() {}\n");
+    use_vendor_crate(&repo, "lonely", "shim");
+    repo.commit("quoted build key");
+    repo.append("vendor/shim/generate.rs", "// changed\n");
+    assert!(is_full(&repo.select("HEAD", &[])));
 }
 
 /// A small deterministic generator, so the property test needs no extra crate.

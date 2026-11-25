@@ -115,6 +115,9 @@ pub fn changed_files(
     // Each entry is "<tag> <mode> <object> <stage>\t<path>". `git diff` skips the working-tree
     // content of entries marked assume-unchanged (lowercase tag) or skip-worktree (`S`).
     let index = list(&["ls-files", "-z", "-v", "-s"])?;
+    // Without a sparse checkout, a missing skip-worktree file was deleted.
+    let sparse = git(&toplevel, &["config", "--bool", "core.sparseCheckout"])
+        .is_ok_and(|value| value.trim() == "true");
     let hidden: Vec<String> = index
         .iter()
         .filter_map(|entry| {
@@ -122,7 +125,8 @@ pub fn changed_files(
             let tag = meta.split(' ').next().unwrap_or_default();
             let assume_unchanged = !tag.is_empty() && tag.chars().all(|c| c.is_ascii_lowercase());
             // A sparse checkout marks absent files skip-worktree. Only a present one can differ.
-            let skip_worktree = tag.eq_ignore_ascii_case("s") && toplevel.join(path).exists();
+            let skip_worktree = tag.eq_ignore_ascii_case("s")
+                && (!sparse || std::fs::symlink_metadata(toplevel.join(path)).is_ok());
             (assume_unchanged || skip_worktree).then(|| path.to_string())
         })
         .collect();

@@ -30,6 +30,8 @@ pub struct Workspace {
     pub root_entries: Vec<String>,
     /// Directories of path dependencies that are not members, with the members that use them.
     pub foreign: Vec<(String, Vec<usize>)>,
+    /// Files that the manifests of non-member path dependencies name, such as `[lib] path`.
+    pub foreign_files: Vec<String>,
     /// Build scripts of the members, relative to the workspace root.
     pub build_scripts: Vec<String>,
     /// Target source files of the members, with the index of the member that declares each.
@@ -82,9 +84,19 @@ pub fn load(cargo: &OsStr, manifest_path: Option<&Path>) -> Result<Workspace, St
         workspace.patched = patched;
     } else {
         workspace.patched = (0..workspace.packages.len()).collect();
-        let users: Vec<usize> = (0..workspace.packages.len())
+        // A non-member path dependency can use a registry package that resolves to the
+        // patch, so its users count too.
+        let mut users: Vec<usize> = (0..workspace.packages.len())
             .filter(|&index| workspace.packages[index].external)
+            .chain(
+                workspace
+                    .foreign
+                    .iter()
+                    .flat_map(|(_, users)| users.iter().copied()),
+            )
             .collect();
+        users.sort_unstable();
+        users.dedup();
         let mut foreign: BTreeMap<String, Vec<usize>> = workspace.foreign.drain(..).collect();
         for dir in others {
             let entry = foreign.entry(dir).or_default();
@@ -168,7 +180,9 @@ fn follow_path_dependencies(workspace: &mut Workspace) {
         for path in key_values(&text, "path") {
             let target = normalize(&base.join(path));
             if !target.is_dir() {
-                continue; // a target path such as `src/lib.rs`
+                // A target path such as `src/lib.rs`: only its location matters.
+                workspace.foreign_files.push(relative(&root, &target));
+                continue;
             }
             let dir = relative(&root, &target);
             if workspace.packages.iter().any(|package| package.dir == dir) {
@@ -316,11 +330,13 @@ fn line_values(line: &str, key: &str) -> Vec<String> {
     let mut values = Vec::new();
     let mut rest = line;
     while let Some(at) = rest.find(key) {
-        let whole_key = !rest[..at]
-            .chars()
-            .next_back()
-            .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '-');
+        let before = rest[..at].chars().next_back();
+        let whole_key = !before.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '-');
         rest = &rest[at + key.len()..];
+        // A quoted key such as `"build" = ...`.
+        if let Some(quote) = before.filter(|c| *c == '"' || *c == '\'') {
+            rest = rest.strip_prefix(quote).unwrap_or(rest);
+        }
         let Some(value) = rest.trim_start().strip_prefix('=').map(str::trim_start) else {
             continue;
         };
@@ -653,6 +669,8 @@ mod tests {
         assert_eq!(key_values(text, "build"), ["gen.rs"]);
         assert_eq!(key_values(text, "path"), ["../b"]);
         assert!(key_values("[package]\nbuild = false", "build").is_empty());
+        assert_eq!(key_values("\"build\" = \"gen.rs\"", "build"), ["gen.rs"]);
+        assert_eq!(key_values("b = { 'path' = \"../b\" }", "path"), ["../b"]);
     }
 
     #[test]
