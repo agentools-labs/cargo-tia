@@ -203,12 +203,24 @@ fn main() -> ExitCode {
     let (base, selection) =
         match git::changed_files(&workspace.root, options.base.as_deref(), options.committed) {
             Ok(changes) => {
-                let selection = select::select(
-                    &workspace,
-                    &options.rules,
-                    &changes.files,
-                    &changes.symlinks,
-                );
+                // Git cannot see changes in a path dependency outside the repository.
+                let repository = workspace::normalize(&workspace.root.join(&changes.repository));
+                let outside = workspace.foreign.iter().find(|(dir, _)| {
+                    !workspace::normalize(&workspace.root.join(dir)).starts_with(&repository)
+                });
+                let selection = match outside {
+                    Some((dir, _)) => Selection::full(
+                        &workspace,
+                        format!("path dependency `{dir}` is outside the git repository"),
+                    ),
+                    None => select::select(
+                        &workspace,
+                        &options.rules,
+                        &changes.files,
+                        &changes.symlinks,
+                        &changes.special,
+                    ),
+                };
                 (Base::Known(changes.base, changes.merge_base), selection)
             }
             Err(unknown) => {
@@ -219,7 +231,7 @@ fn main() -> ExitCode {
 
     match options.mode {
         Mode::List if options.json => {
-            println!("{:#}", to_json(&workspace, &base, &selection));
+            println!("{:#}", to_json(&workspace, &base, &selection, &options));
             ExitCode::SUCCESS
         }
         Mode::List => {
@@ -227,7 +239,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Mode::Args => {
-            println!("{}", cargo_args(&workspace, &selection).join(" "));
+            println!("{}", cargo_args(&workspace, &selection, &options).join(" "));
             ExitCode::SUCCESS
         }
         Mode::Test | Mode::Nextest => {
@@ -244,20 +256,16 @@ fn main() -> ExitCode {
             run(
                 &cargo,
                 subcommand,
-                &options,
-                &cargo_args(&workspace, &selection),
+                &cargo_args(&workspace, &selection, &options),
+                &options.passthrough,
             )
         }
     }
 }
 
-fn run(cargo: &OsStr, subcommand: &[&str], options: &Options, selection: &[String]) -> ExitCode {
+fn run(cargo: &OsStr, subcommand: &[&str], selection: &[String], extra: &[OsString]) -> ExitCode {
     let mut command = Command::new(cargo);
-    command.args(subcommand);
-    if let Some(path) = &options.manifest_path {
-        command.arg("--manifest-path").arg(path);
-    }
-    command.args(selection).args(&options.passthrough);
+    command.args(subcommand).args(selection).args(extra);
     match command.status() {
         Ok(status) if status.success() => ExitCode::SUCCESS,
         Ok(status) => ExitCode::from(status.code().map_or(1, |code| code.clamp(1, 255) as u8)),
@@ -277,12 +285,18 @@ enum Base {
 
 /// `--workspace`, plus `--exclude NAME` for each package that is not selected. Unlike
 /// `-p NAME`, `--exclude` matches workspace members only, so a dependency with the same name
-/// cannot make it ambiguous. Empty when nothing is selected.
-fn cargo_args(workspace: &Workspace, selection: &Selection) -> Vec<String> {
+/// cannot make it ambiguous. Starts with `--manifest-path PATH` when one was given. Empty when
+/// nothing is selected.
+fn cargo_args(workspace: &Workspace, selection: &Selection, options: &Options) -> Vec<String> {
     if selection.packages.is_empty() {
         return Vec::new();
     }
-    let mut args = vec!["--workspace".to_string()];
+    let mut args = Vec::new();
+    if let Some(path) = &options.manifest_path {
+        args.push("--manifest-path".to_string());
+        args.push(path.to_string_lossy().into_owned());
+    }
+    args.push("--workspace".to_string());
     for (index, package) in workspace.packages.iter().enumerate() {
         if !selection
             .packages
@@ -311,11 +325,12 @@ fn report(workspace: &Workspace, base: &Base, selection: &Selection) -> String {
         let width = selection
             .files
             .iter()
-            .map(|(p, _)| p.len())
+            .map(|file| file.path.len())
             .max()
             .unwrap_or(0);
-        for (path, effect) in &selection.files {
-            let effect = match effect {
+        for file in &selection.files {
+            let path = &file.path;
+            let mut effect = match &file.effect {
                 Effect::FullRun(why) => format!("full run: {why}"),
                 Effect::Ignored(pattern) => format!("ignored by `{pattern}`"),
                 Effect::Package(index) => workspace.packages[*index].name.clone(),
@@ -329,6 +344,9 @@ fn report(workspace: &Workspace, base: &Base, selection: &Selection) -> String {
                 ),
                 Effect::Outside => "full run: outside every package".to_string(),
             };
+            if let Some(target) = &file.link_to {
+                effect += &format!(" (link to {target})");
+            }
             out += &format!("  {path:width$}  {effect}\n");
         }
     }
@@ -360,7 +378,7 @@ fn report(workspace: &Workspace, base: &Base, selection: &Selection) -> String {
     out
 }
 
-fn to_json(workspace: &Workspace, base: &Base, selection: &Selection) -> Value {
+fn to_json(workspace: &Workspace, base: &Base, selection: &Selection, options: &Options) -> Value {
     let name = |index: usize| workspace.packages[index].name.clone();
     let (base, merge_base) = match base {
         Base::Known(base, merge_base) => {
@@ -371,20 +389,27 @@ fn to_json(workspace: &Workspace, base: &Base, selection: &Selection) -> Value {
     let files: Vec<Value> = selection
         .files
         .iter()
-        .map(|(path, effect)| match effect {
-            Effect::FullRun(why) => json!({"path": path, "effect": "full-run", "detail": why}),
-            Effect::Ignored(pattern) => {
-                json!({"path": path, "effect": "ignored", "detail": pattern})
+        .map(|file| {
+            let path = &file.path;
+            let mut value = match &file.effect {
+                Effect::FullRun(why) => json!({"path": path, "effect": "full-run", "detail": why}),
+                Effect::Ignored(pattern) => {
+                    json!({"path": path, "effect": "ignored", "detail": pattern})
+                }
+                Effect::Package(index) => {
+                    json!({"path": path, "effect": "package", "packages": [name(*index)]})
+                }
+                Effect::PathDependency(users) => json!({
+                    "path": path,
+                    "effect": "path-dependency",
+                    "packages": users.iter().map(|i| name(*i)).collect::<Vec<_>>(),
+                }),
+                Effect::Outside => json!({"path": path, "effect": "outside"}),
+            };
+            if let Some(target) = &file.link_to {
+                value["link_to"] = Value::from(target.clone());
             }
-            Effect::Package(index) => {
-                json!({"path": path, "effect": "package", "packages": [name(*index)]})
-            }
-            Effect::PathDependency(users) => json!({
-                "path": path,
-                "effect": "path-dependency",
-                "packages": users.iter().map(|i| name(*i)).collect::<Vec<_>>(),
-            }),
-            Effect::Outside => json!({"path": path, "effect": "outside"}),
+            value
         })
         .collect();
     let packages: Vec<Value> = selection
@@ -406,7 +431,7 @@ fn to_json(workspace: &Workspace, base: &Base, selection: &Selection) -> Value {
         "changed_files": files,
         "selected": packages,
         "workspace_packages": workspace.packages.len(),
-        "cargo_args": cargo_args(workspace, selection),
+        "cargo_args": cargo_args(workspace, selection, options),
     })
 }
 

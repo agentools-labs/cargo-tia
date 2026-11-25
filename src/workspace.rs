@@ -14,6 +14,8 @@ pub struct Package {
     pub dir: String,
     /// Indices of the workspace members this package depends on, any dependency kind.
     pub deps: Vec<usize>,
+    /// The package has a registry or git dependency.
+    pub external: bool,
 }
 
 /// The parts of a workspace that decide which packages a change affects.
@@ -30,6 +32,12 @@ pub struct Workspace {
     pub foreign: Vec<(String, Vec<usize>)>,
     /// Build scripts of the members, relative to the workspace root.
     pub build_scripts: Vec<String>,
+    /// Directories that hold a target of a member outside that member's directory, with the
+    /// member's name.
+    pub cross_targets: Vec<(String, String)>,
+    /// Files with a `[patch]` or `[replace]` table. A patch can redirect a registry package that
+    /// other registry packages use to a member, and no-deps metadata does not show those edges.
+    pub patch_files: Vec<PathBuf>,
     /// `full-run` globs from `[workspace.metadata.tia]`.
     pub full_run: Vec<String>,
     /// `ignore` globs from `[workspace.metadata.tia]`.
@@ -39,6 +47,8 @@ pub struct Workspace {
 /// Runs `cargo metadata --no-deps --offline` and builds the workspace model.
 pub fn load(cargo: &OsStr, manifest_path: Option<&Path>) -> Result<Workspace, String> {
     let mut command = Command::new(cargo);
+    // Through the rustup proxy, a missing toolchain must not be downloaded.
+    command.env("RUSTUP_AUTO_INSTALL", "0");
     command.args([
         "metadata",
         "--format-version",
@@ -60,7 +70,44 @@ pub fn load(cargo: &OsStr, manifest_path: Option<&Path>) -> Result<Workspace, St
     }
     let metadata: Value = serde_json::from_slice(&output.stdout)
         .map_err(|error| format!("cannot parse `cargo metadata` output: {error}"))?;
-    from_metadata(&metadata)
+    let mut workspace = from_metadata(&metadata)?;
+    workspace.patch_files = patch_files(&workspace.root);
+    Ok(workspace)
+}
+
+/// The workspace manifest and the Cargo configuration files that Cargo reads for this
+/// workspace, when they hold a `[patch]` or `[replace]` table.
+fn patch_files(root: &Path) -> Vec<PathBuf> {
+    let mut candidates = vec![root.join("Cargo.toml")];
+    for dir in root.ancestors() {
+        candidates.push(dir.join(".cargo/config.toml"));
+        candidates.push(dir.join(".cargo/config"));
+    }
+    let cargo_home = std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")));
+    if let Some(home) = cargo_home {
+        candidates.push(home.join("config.toml"));
+        candidates.push(home.join("config"));
+    }
+    candidates.sort();
+    candidates.dedup();
+    candidates
+        .into_iter()
+        .filter(|path| std::fs::read_to_string(path).is_ok_and(|text| has_patch_table(&text)))
+        .collect()
+}
+
+/// Finds `[patch...]`, `[replace]` and dotted `patch.` keys at the start of a line. Text
+/// matching can only report too many patches, which selects more packages.
+fn has_patch_table(text: &str) -> bool {
+    text.lines().map(str::trim_start).any(|line| {
+        let line = line.trim_start_matches('[').trim_start();
+        ["patch", "replace"].iter().any(|key| {
+            line.strip_prefix(key)
+                .is_some_and(|rest| rest.trim_start().starts_with(['.', ']', '=']))
+        })
+    })
 }
 
 /// Builds the workspace model from `cargo metadata` JSON.
@@ -101,6 +148,7 @@ pub fn from_metadata(metadata: &Value) -> Result<Workspace, String> {
             name: name.to_string(),
             dir: relative(&root, &normalize(dir)),
             deps: Vec::new(),
+            external: false,
         });
     }
 
@@ -118,11 +166,16 @@ pub fn from_metadata(metadata: &Value) -> Result<Workspace, String> {
             if is_build_script {
                 workspace.build_scripts.push(src.clone());
             }
+            let dir = &workspace.packages[index].dir;
             if is_root {
                 let entry = src.split('/').next().unwrap_or_default().to_string();
                 if !entry.is_empty() && !workspace.root_entries.contains(&entry) {
                     workspace.root_entries.push(entry);
                 }
+            } else if !src.starts_with(&format!("{dir}/")) {
+                let parent = src.rsplit_once('/').map_or("", |(parent, _)| parent);
+                let name = workspace.packages[index].name.clone();
+                workspace.cross_targets.push((parent.to_string(), name));
             }
         }
         let mut deps = Vec::new();
@@ -144,7 +197,10 @@ pub fn from_metadata(metadata: &Value) -> Result<Workspace, String> {
                 }
                 // A registry or git dependency named like a member may be redirected to the
                 // member by `[patch]`, so count it as an edge. At worst this selects too much.
-                None => workspace.packages.iter().position(|p| p.name == dep_name),
+                None => {
+                    workspace.packages[index].external = true;
+                    workspace.packages.iter().position(|p| p.name == dep_name)
+                }
             };
             if let Some(member) = target {
                 if member != index && !deps.contains(&member) {
@@ -158,6 +214,8 @@ pub fn from_metadata(metadata: &Value) -> Result<Workspace, String> {
     workspace.foreign = foreign.into_iter().collect();
     workspace.build_scripts.sort();
     workspace.root_entries.sort();
+    workspace.cross_targets.sort();
+    workspace.cross_targets.dedup();
 
     let config = &metadata["metadata"]["tia"];
     workspace.full_run = string_list(config, "full-run")?;
@@ -298,6 +356,42 @@ mod tests {
         assert_eq!(ws.root_entries, ["build.rs", "src", "tests"]);
         assert_eq!(ws.full_run, ["ci/**"]);
         assert_eq!(ws.ignore, ["**/*.md"]);
+        // app has registry dependencies; the others have path dependencies only.
+        assert!(ws.packages[0].external && !ws.packages[1].external && !ws.packages[2].external);
+        assert!(ws.cross_targets.is_empty());
+    }
+
+    #[test]
+    fn targets_outside_the_package_directory_are_recorded() {
+        let metadata = json!({
+            "workspace_root": "/nonexistent/ws",
+            "workspace_members": ["path+file:///nonexistent/ws/app#app@0.1.0"],
+            "packages": [package("app", "/nonexistent/ws/app", vec![], vec![
+                target("lib", "/nonexistent/ws/app/src/lib.rs"),
+                target("test", "/nonexistent/ws/fixtures/src/check.rs"),
+            ])],
+        });
+        let ws = from_metadata(&metadata).unwrap();
+        assert_eq!(
+            ws.cross_targets,
+            [("fixtures/src".to_string(), "app".to_string())]
+        );
+    }
+
+    #[test]
+    fn finds_patch_tables() {
+        assert!(has_patch_table(
+            "[patch.crates-io]\nfoo = { path = \"foo\" }"
+        ));
+        assert!(has_patch_table("  [ patch.\"https://github.com/x/y\" ]"));
+        assert!(has_patch_table(
+            "[replace]\n\"foo:0.1.0\" = { path = \"foo\" }"
+        ));
+        assert!(has_patch_table("patch.crates-io.foo.path = \"foo\""));
+        assert!(!has_patch_table(
+            "[package]\nname = \"patchwork\"\n# [patch.crates-io]"
+        ));
+        assert!(!has_patch_table("[dependencies]\npatchwork = \"1\""));
     }
 
     #[test]

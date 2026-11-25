@@ -784,6 +784,13 @@ fn symlinked_files_select_the_package_that_holds_the_link() {
     repo.append("crates/lonely/src/lib.rs", "// changed\n");
     let json = repo.select("HEAD", &[]);
     assert_eq!(selected(&json), ["app", "lonely"], "{json:#}");
+    let link = json["changed_files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|file| file["path"] == "crates/app/src/shared.rs")
+        .unwrap();
+    assert_eq!(link["link_to"], "crates/lonely/src/lib.rs");
 }
 
 #[test]
@@ -821,7 +828,144 @@ fn submodule_changes_count_even_when_git_config_hides_them() {
     };
     inner.append("data.txt", "2\n");
     inner.commit("bump");
+    // The submodule could hold a Cargo.toml or a build script, so its contents are unknown.
+    let json = repo.select("HEAD", &[]);
+    assert!(is_full(&json), "{json:#}");
+    assert_eq!(json["changed_files"][0]["path"], "crates/lonely/vendor");
+}
+
+#[cfg(unix)]
+#[test]
+fn changed_symlinks_select_the_whole_workspace() {
+    let repo = chain();
+    fs::create_dir_all(repo.path("crates/lonely/src/v1")).unwrap();
+    fs::create_dir_all(repo.path("crates/lonely/src/v2")).unwrap();
+    std::os::unix::fs::symlink("v1", repo.path("crates/lonely/src/current")).unwrap();
+    repo.write("crates/lonely/src/v1/x.rs", "// v1\n");
+    repo.write("crates/lonely/src/v2/x.rs", "// v2\n");
+    repo.commit("versions");
+    // Retargeting a link changes what every reader of the link compiles.
+    fs::remove_file(repo.path("crates/lonely/src/current")).unwrap();
+    std::os::unix::fs::symlink("v2", repo.path("crates/lonely/src/current")).unwrap();
+    let json = repo.select("HEAD", &[]);
+    assert!(is_full(&json), "{json:#}");
+    repo.commit("retarget");
+    assert!(is_full(&repo.select("HEAD~1", &["--committed"])));
+    // A new, untracked link too.
+    std::os::unix::fs::symlink("v1", repo.path("crates/lonely/src/old")).unwrap();
+    assert!(is_full(&repo.select("HEAD", &[])));
+}
+
+#[test]
+fn skip_worktree_edits_still_count() {
+    let repo = chain();
+    repo.git(&[
+        "update-index",
+        "--skip-worktree",
+        "crates/lonely/src/lib.rs",
+    ]);
+    repo.append("crates/lonely/src/lib.rs", "// hidden from git diff\n");
     assert_eq!(selected(&repo.select("HEAD", &[])), ["lonely"]);
+}
+
+#[test]
+fn committed_only_distrusts_hidden_manifests() {
+    let repo = chain();
+    repo.append("crates/core/src/lib.rs", "pub fn g() {}\n");
+    repo.commit("core");
+    repo.git(&[
+        "update-index",
+        "--assume-unchanged",
+        "crates/app/Cargo.toml",
+    ]);
+    let json = repo.select("HEAD~1", &["--committed"]);
+    assert!(is_full(&json), "{json:#}");
+}
+
+#[test]
+fn files_next_to_a_target_of_another_package_select_the_whole_workspace() {
+    let repo = chain();
+    let manifest = fs::read_to_string(repo.path("crates/app/Cargo.toml")).unwrap();
+    repo.write(
+        "crates/app/Cargo.toml",
+        &(manifest + "\n[[test]]\nname = \"check\"\npath = \"../lonely/checks/check.rs\"\n"),
+    );
+    repo.write("crates/lonely/checks/check.rs", "#[test] fn t() {}\n");
+    repo.commit("cross target");
+    repo.append("crates/lonely/checks/check.rs", "// changed\n");
+    let json = repo.select("HEAD", &[]);
+    assert!(is_full(&json), "app compiles this file: {json:#}");
+    // Other files of lonely still select lonely only.
+    repo.git(&["checkout", "-q", "--", "."]);
+    repo.append("crates/lonely/src/lib.rs", "// changed\n");
+    assert_eq!(selected(&repo.select("HEAD", &[])), ["lonely"]);
+}
+
+#[test]
+fn path_dependency_outside_the_repository_selects_the_whole_workspace() {
+    let outside = Repo::new("outside-crate");
+    outside.write(
+        "Cargo.toml",
+        "[package]\nname = \"outer\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    outside.write("src/lib.rs", "pub fn o() {}\n");
+    let repo = chain();
+    let manifest = fs::read_to_string(repo.path("crates/lonely/Cargo.toml")).unwrap();
+    repo.write(
+        "crates/lonely/Cargo.toml",
+        &manifest.replace(
+            "[dependencies]\n",
+            &format!(
+                "[dependencies]\nouter = {{ path = {:?} }}\n",
+                outside.dir.display().to_string()
+            ),
+        ),
+    );
+    repo.commit("outer dependency");
+    // Git cannot see an edit in the other directory, so nothing can be ruled out.
+    let json = repo.select("HEAD", &[]);
+    assert!(is_full(&json), "{json:#}");
+    assert!(json["full_reasons"][0]
+        .as_str()
+        .unwrap()
+        .contains("outside the git repository"));
+}
+
+#[test]
+fn a_patch_makes_registry_users_depend_on_every_member() {
+    let repo = chain();
+    repo.append(
+        "Cargo.toml",
+        "\n[patch.crates-io]\ncore = { path = \"crates/core\" }\n",
+    );
+    let manifest = fs::read_to_string(repo.path("crates/lonely/Cargo.toml")).unwrap();
+    repo.write(
+        "crates/lonely/Cargo.toml",
+        &manifest.replace("[dependencies]\n", "[dependencies]\nwrapper = \"1\"\n"),
+    );
+    repo.commit("patch");
+    // A registry `wrapper` may depend on the patched `core`.
+    repo.append("crates/core/src/lib.rs", "pub fn g() {}\n");
+    let json = repo.select("HEAD", &[]);
+    assert!(selected(&json).contains(&"lonely".to_string()), "{json:#}");
+}
+
+#[test]
+fn args_keep_the_manifest_path() {
+    let repo = chain();
+    repo.append("crates/mid/src/lib.rs", "pub fn g() {}\n");
+    let manifest = repo.path("Cargo.toml");
+    let manifest = manifest.to_str().unwrap();
+    let output = repo.tia_in(
+        &std::env::temp_dir(),
+        &["args", "--base", "HEAD", "--manifest-path", manifest],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(
+        stdout(&output).starts_with(&format!("--manifest-path {manifest} --workspace --exclude")),
+        "{}",
+        stdout(&output)
+    );
 }
 
 /// A small deterministic generator, so the property test needs no extra crate.

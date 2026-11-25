@@ -13,8 +13,12 @@ pub struct Changes {
     pub merge_base: String,
     /// Changed, added, deleted and (unless committed-only) untracked files.
     pub files: Vec<String>,
+    /// Changed files that are or were a symbolic link or a submodule.
+    pub special: Vec<String>,
     /// Tracked symbolic links as (link, resolved target), relative to the workspace root.
     pub symlinks: Vec<(String, String)>,
+    /// The repository root relative to the workspace root: empty, or `..` segments.
+    pub repository: String,
 }
 
 /// Why the change set is unknown. The caller then selects the full workspace.
@@ -78,11 +82,13 @@ pub fn changed_files(
             .map(str::to_string)
             .collect())
     };
-    let diff = |revisions: &[&str]| -> Result<Vec<String>, Unknown> {
+    // Changed paths, and the changed paths that are or were a symbolic link or a submodule.
+    let diff = |revisions: &[&str]| -> Result<(Vec<String>, Vec<String>), Unknown> {
         let mut args = vec![
             "diff",
-            "--name-only",
+            "--raw",
             "-z",
+            "--no-abbrev",
             "--no-renames",
             "--no-ext-diff",
             "--no-color",
@@ -90,47 +96,74 @@ pub fn changed_files(
         ];
         args.extend(revisions);
         args.push("--");
-        list(&args)
+        // Each record is ":<old mode> <new mode> <old object> <new object> <status>", then the path.
+        let fields = list(&args)?;
+        let (mut paths, mut special) = (Vec::new(), Vec::new());
+        for pair in fields.chunks(2) {
+            let [meta, path] = pair else {
+                return Err(fail("cannot parse `git diff --raw` output".to_string()));
+            };
+            let mut modes = meta.trim_start_matches(':').split(' ').take(2);
+            if modes.any(|mode| mode == "120000" || mode == "160000") {
+                special.push(path.clone());
+            }
+            paths.push(path.clone());
+        }
+        Ok((paths, special))
     };
     let untracked = || list(&["ls-files", "-z", "--others", "--exclude-standard"]);
-    // Each entry is "<tag> <mode> <object> <stage>\t<path>".
+    // Each entry is "<tag> <mode> <object> <stage>\t<path>". `git diff` skips the working-tree
+    // content of entries marked assume-unchanged (lowercase tag) or skip-worktree (`S`).
     let index = list(&["ls-files", "-z", "-v", "-s"])?;
+    let hidden: Vec<String> = index
+        .iter()
+        .filter_map(|entry| {
+            let (meta, path) = entry.split_once('\t')?;
+            let tag = meta.split(' ').next().unwrap_or_default();
+            let assume_unchanged = !tag.is_empty() && tag.chars().all(|c| c.is_ascii_lowercase());
+            // A sparse checkout marks absent files skip-worktree. Only a present one can differ.
+            let skip_worktree = tag.eq_ignore_ascii_case("s") && toplevel.join(path).exists();
+            (assume_unchanged || skip_worktree).then(|| path.to_string())
+        })
+        .collect();
+    let is_manifest = |path: &String| path.rsplit('/').next() == Some("Cargo.toml");
 
-    let mut paths;
+    let (mut paths, mut special);
     if committed_only {
-        paths = diff(&[&merge_base, "HEAD"])?;
+        (paths, special) = diff(&[&merge_base, "HEAD"])?;
         // The workspace graph comes from the working tree, so it must match HEAD.
-        let mut dirty = diff(&["HEAD"])?;
+        let (mut dirty, _) = diff(&["HEAD"])?;
         dirty.extend(untracked()?);
-        if let Some(manifest) = dirty
-            .iter()
-            .find(|path| path.rsplit('/').next() == Some("Cargo.toml"))
-        {
+        dirty.extend(hidden.iter().cloned());
+        if let Some(manifest) = dirty.iter().find(|path| is_manifest(path)) {
             return Err(fail(format!(
-                "`{manifest}` has uncommitted changes, so the workspace may differ from HEAD"
+                "`{manifest}` may have uncommitted changes, so the workspace may differ from HEAD"
             )));
         }
     } else {
-        paths = diff(&[&merge_base])?;
-        paths.extend(untracked()?);
-        // `git diff` does not report edits to files marked assume-unchanged.
-        for entry in &index {
-            if let Some((meta, path)) = entry.split_once('\t') {
-                let tag = meta.split(' ').next().unwrap_or_default();
-                if !tag.is_empty() && tag.chars().all(|c| c.is_ascii_lowercase()) {
-                    paths.push(path.to_string());
-                }
+        (paths, special) = diff(&[&merge_base])?;
+        let new_files = untracked()?;
+        for path in &new_files {
+            if std::fs::symlink_metadata(toplevel.join(path)).is_ok_and(|m| m.is_symlink()) {
+                special.push(path.clone());
             }
         }
+        paths.extend(new_files);
+        paths.extend(hidden);
     }
 
     let root = normalize(workspace_root);
-    let mut files: Vec<String> = paths
-        .iter()
-        .map(|path| relative(&root, &toplevel.join(path)))
-        .collect();
-    files.sort();
-    files.dedup();
+    let to_workspace = |paths: &[String]| -> Vec<String> {
+        let mut out: Vec<String> = paths
+            .iter()
+            .map(|path| relative(&root, &toplevel.join(path)))
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    };
+    let files = to_workspace(&paths);
+    let special = to_workspace(&special);
 
     let mut symlinks = Vec::new();
     for entry in &index {
@@ -153,7 +186,9 @@ pub fn changed_files(
         base,
         merge_base,
         files,
+        special,
         symlinks,
+        repository: relative(&root, &toplevel),
     })
 }
 
@@ -179,7 +214,9 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
         .arg(dir)
         .args(args)
         // A partial clone must not fetch missing objects: the command fails instead.
+        // GIT_NO_LAZY_FETCH needs git 2.45; denying every transport covers older versions.
         .env("GIT_NO_LAZY_FETCH", "1")
+        .env("GIT_ALLOW_PROTOCOL", "none")
         .output()
         .map_err(|error| format!("cannot run git: {error}"))?;
     if output.status.success() {
