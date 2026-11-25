@@ -1915,6 +1915,21 @@ fn named_workspace_of_a_path_dependency() {
 }
 
 #[test]
+fn a_new_file_that_differs_in_case_from_a_tracked_one() {
+    let repo = chain();
+    repo.write("crates/lonely/tests/smoke.rs", "#[test] fn smoke() {}\n");
+    repo.commit("smoke test");
+    // Only a case-sensitive file system holds both spellings as two files.
+    repo.write("crates/lonely/tests/Smoke.rs", "#[test] fn other() {}\n");
+    let tracked = fs::read_to_string(repo.path("crates/lonely/tests/smoke.rs")).unwrap();
+    if tracked.contains("other") {
+        return;
+    }
+    let json = repo.select("HEAD", &["--ignore", "**/Smoke.rs"]);
+    assert!(selected(&json).is_empty(), "{json:#}");
+}
+
+#[test]
 fn case_only_renames_count() {
     let repo = chain();
     repo.write("crates/lonely/src/worker.rs", "// worker\n");
@@ -2035,6 +2050,21 @@ fn deleted_test_in_a_discovery_directory_that_is_a_non_member_crate() {
     let json = repo.select("HEAD", &[]);
     assert_eq!(json["workspace_packages"], 6, "{json:#}");
     assert_eq!(selected(&json), ["app", "lonely"], "{json:#}");
+}
+
+#[test]
+fn committed_only_accepts_a_file_removed_from_the_index_but_unchanged() {
+    let repo = chain();
+    repo.append("crates/lonely/src/lib.rs", "// changed\n");
+    repo.commit("change lonely");
+    // The file stays on disk as in HEAD: Cargo sees no difference.
+    repo.git(&["rm", "-q", "--cached", "crates/app/src/lib.rs"]);
+    let json = repo.select("HEAD^", &["--committed"]);
+    assert!(!is_full(&json), "{json:#}");
+    assert_eq!(selected(&json), ["lonely"], "{json:#}");
+    // An edit to that file is a difference.
+    repo.append("crates/app/src/lib.rs", "// edited\n");
+    assert!(is_full(&repo.select("HEAD^", &["--committed"])));
 }
 
 #[test]

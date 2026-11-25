@@ -265,9 +265,16 @@ pub fn changed_files(
         // the working tree must match HEAD: tracked, untracked and hidden files alike.
         let (dirty, _) = diff(&["HEAD"])?;
         let new_files = untracked()?;
+        // A file removed from the index (`git rm --cached`) but on disk as in HEAD is the
+        // same for Cargo.
+        let unindexed: Vec<&String> = new_files
+            .iter()
+            .filter(|path| dirty.contains(path) && !differs(&toplevel, "HEAD", path))
+            .collect();
         let differing = dirty
-            .first()
-            .or(new_files.first())
+            .iter()
+            .chain(&new_files)
+            .find(|path| !unindexed.contains(path))
             .or(hidden_links.first())
             .cloned()
             .or_else(|| {
@@ -285,7 +292,8 @@ pub fn changed_files(
         (paths, special) = diff(&[&merge_base])?;
         let new_files = untracked()?;
         // A case-only rename on a case-insensitive file system: git can still read the old
-        // spelling, so count both.
+        // spelling, so count both. On a case-sensitive one the two spellings are two files, and
+        // git reports the deletion of a renamed one itself.
         let tracked: std::collections::BTreeMap<String, &str> = index
             .iter()
             .filter_map(|entry| entry.split_once('\t').map(|(_, path)| path))
@@ -295,6 +303,7 @@ pub fn changed_files(
             if let Some(old) = tracked
                 .get(&path.to_lowercase())
                 .filter(|old| **old != path)
+                .filter(|old| same_entry(&toplevel.join(old), &toplevel.join(path)))
             {
                 paths.push(old.to_string());
             }
@@ -384,6 +393,27 @@ pub fn changed_files(
         repository: relative(&root, &toplevel),
         uncertain,
     })
+}
+
+/// True when two paths name one directory entry, as two spellings do on a case-insensitive
+/// file system. False when the first does not exist. True when it cannot be told.
+fn same_entry(first: &Path, second: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        match (
+            std::fs::symlink_metadata(first),
+            std::fs::symlink_metadata(second),
+        ) {
+            (Ok(first), Ok(second)) => first.dev() == second.dev() && first.ino() == second.ino(),
+            (Err(_), _) => false,
+            _ => true,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::symlink_metadata(first).is_ok()
+    }
 }
 
 /// True when an initialized submodule, or one nested in it, has changes or files that git
