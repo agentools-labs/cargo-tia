@@ -184,6 +184,9 @@ This repository uses the tool on itself in [its CI workflow](.github/workflows/c
   Add shared inputs as `full-run` globs.
 - A partial selection builds with the features of the selected packages only. A build can differ from
   the `--workspace` build. Run the full workspace on the default branch to catch this.
+- From Cargo configuration, the tool reads `[patch]`, `[replace]`, `paths`, `include` and source
+  replacement directories. A change to any Cargo configuration file selects the full workspace. Other
+  settings that never change in the compared commits, such as environment variables, are not read.
 - Any `Cargo.lock` change selects the full workspace. The tool does not compare the lockfile per
   package.
 - In a partial clone, git 2.45 and newer cannot fetch missing objects for the tool: the command fails
