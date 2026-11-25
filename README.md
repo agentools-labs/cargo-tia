@@ -103,7 +103,7 @@ Arguments after `--` go to the test command. They must not change the packages: 
      member: those dependencies can depend on the patched member. This counts for the patched
      members only. A local patch path that is not a member counts for every member, and it is a
      path dependency of each member with registry or git dependencies. Cargo `paths` overrides
-     count the same way. The tool reads patches and overrides as text from the workspace manifest
+     count the same way, for every member below the override directory. The tool reads patches and overrides as text from the workspace manifest
      and from the Cargo configuration files in the workspace root, the current directory, their
      parents and `CARGO_HOME`, and from the files that those configuration files include.
 
@@ -120,7 +120,8 @@ These changes select the full workspace:
 - A file in a source replacement directory (`directory` or `local-registry` in Cargo configuration).
   Any member can use the registry packages there.
 - A file in a directory that holds a target of another package, for example
-  `[[test]] path = "../other/check.rs"`. This includes targets of the root package below a member.
+  `[[test]] path = "../other/check.rs"`. This includes targets of the root package below a member,
+  and files that a non-member path dependency compiles from another package's directory.
 - A file outside every package, for example a root `README.md`, `.github/` or `scripts/`. A package at
   the workspace root owns only the top-level entries that hold its targets, such as `src/` and
   `tests/`.
@@ -134,8 +135,8 @@ These changes select the full workspace:
   of a path dependency. Git cannot see changes there.
 - A non-member path dependency that inherits dependencies from a workspace manifest that the tool
   cannot find.
-- With `--committed`: a `Cargo.toml` with uncommitted changes, or one that git hides with
-  assume-unchanged or skip-worktree. The tool reads the workspace from the working tree, so the
+- With `--committed`: a `Cargo.toml` or a file in a `.cargo` directory with uncommitted changes, or
+  one that git hides with assume-unchanged or skip-worktree. The tool reads the workspace from the working tree, so the
   working tree must match `HEAD` there.
 
 A dependency on a registry package with the same name as a member also counts as an edge to that
