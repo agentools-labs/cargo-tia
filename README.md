@@ -65,8 +65,8 @@ the run. `args` separates arguments with spaces, so for a manifest path that hol
 `cargo_args` array of `cargo tia list --json` instead.
 
 Arguments after `--` go to the test command. They must not change the packages: the tool rejects
-`-p` (also in a group such as `-qp`), `--package`, `--workspace`, `--exclude` and `--manifest-path`
-there. A `--config` option there can change patches and build settings, so it selects the full
+`-p` and `-m` (also in a group such as `-qp`), `--package`, `--workspace`, `--exclude` and
+`--manifest-path` there. A `--config` option there can change patches and build settings, so it selects the full
 workspace.
 
 ## How it selects
@@ -75,7 +75,7 @@ workspace.
    `origin/HEAD` is not set, the tool does not guess a branch: pass `--base`.
 2. It lists the files that changed since the merge base. The list includes staged, unstaged and
    untracked files, and edits to files marked assume-unchanged or skip-worktree. Git configuration
-   such as `diff.ignoreSubmodules` cannot hide a change. With `--committed`, the list includes only
+   such as `diff.ignoreSubmodules` or `core.fsmonitor` cannot hide a change. With `--committed`, the list includes only
    committed changes.
 3. It reads the workspace with `cargo metadata --no-deps --offline`.
 4. It gives each changed file one effect, in this order:
@@ -95,7 +95,8 @@ workspace.
    - a member that uses a path dependency that is not a member;
    - a member with registry or git dependencies, when a `[patch]` or `[replace]` entry points to a
      member: those dependencies can depend on the patched member. This counts for the patched
-     members only. A patch path that is not a member counts for every member. The tool reads
+     members only. A local patch path that is not a member counts for every member, and it is a
+     path dependency of each member with registry or git dependencies. The tool reads
      patches as text from the workspace manifest and from the Cargo configuration files in the
      workspace root, the current directory, their parents and `CARGO_HOME`.
 
