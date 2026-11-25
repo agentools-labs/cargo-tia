@@ -374,7 +374,7 @@ mod tests {
             ".cargo/config.toml",
             "crates/app/.cargo/config",
             "crates/app/Cargo.toml",
-            "fuzz/Cargo.lock",
+            "crates/app/fuzz/Cargo.lock",
             "crates/app/build.rs",
             "crates/core/gen.rs",
             "ci/run.sh",
