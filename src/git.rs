@@ -118,16 +118,24 @@ pub fn changed_files(
     // Without a sparse checkout, a missing skip-worktree file was deleted.
     let sparse = git(&toplevel, &["config", "--bool", "core.sparseCheckout"])
         .is_ok_and(|value| value.trim() == "true");
+    let mut hidden_links = Vec::new();
     let hidden: Vec<String> = index
         .iter()
         .filter_map(|entry| {
             let (meta, path) = entry.split_once('\t')?;
-            let tag = meta.split(' ').next().unwrap_or_default();
+            let mut fields = meta.split(' ');
+            let tag = fields.next().unwrap_or_default();
+            let mode = fields.next().unwrap_or_default();
             let assume_unchanged = !tag.is_empty() && tag.chars().all(|c| c.is_ascii_lowercase());
             // A sparse checkout marks absent files skip-worktree. Only a present one can differ.
             let skip_worktree = tag.eq_ignore_ascii_case("s")
                 && (!sparse || std::fs::symlink_metadata(toplevel.join(path)).is_ok());
-            (assume_unchanged || skip_worktree).then(|| path.to_string())
+            let hidden = assume_unchanged || skip_worktree;
+            // A hidden link or submodule can change its target without git seeing it.
+            if hidden && (mode == "120000" || mode == "160000") {
+                hidden_links.push(path.to_string());
+            }
+            hidden.then(|| path.to_string())
         })
         .collect();
     let is_manifest = |path: &String| path.rsplit('/').next() == Some("Cargo.toml");
@@ -156,6 +164,7 @@ pub fn changed_files(
         }
         paths.extend(new_files);
         paths.extend(hidden);
+        special.extend(hidden_links);
     }
 
     let root = normalize(workspace_root);

@@ -93,7 +93,9 @@ Arguments after `--` go to the test command. They must not change the packages: 
    The report shows that path with `(link to ...)`. A link to the workspace root or above it reaches
    every file, so any change changes the package that holds it.
 5. It selects the changed packages and every member that depends on them, directly or through other
-   members. Normal, dev, build, optional and target-specific dependencies all count. Cargo does not
+   members. Normal, dev, build, optional and target-specific dependencies all count. A member inside
+   the source directory of another package's target counts as its dependency, because that target can
+   compile the member's files as modules. Cargo does not
    report every edge, so two kinds of members count as dependents of every member:
    - a member that uses a path dependency that is not a member;
    - a member with registry or git dependencies, when a `[patch]` or `[replace]` entry points to a
@@ -182,7 +184,9 @@ This repository uses the tool on itself in [its CI workflow](.github/workflows/c
 
 ## Limits
 
-- The unit of selection is a package. With `cargo tia test`, a selected package runs all of its tests.
+- The unit of selection is a package. For a selected package, Cargo runs the tests that the manifest
+  and the command-line options enable (`required-features` can turn a test off). With `cargo tia test`,
+  that includes doctests.
   Nextest does not run doctests, so with `cargo tia nextest` also run `cargo tia test -- --doc`
   when the selection holds a library (Cargo rejects `--doc` for binaries only).
 - The tool sees the inputs that Cargo declares and the directory that holds each file. It does not see

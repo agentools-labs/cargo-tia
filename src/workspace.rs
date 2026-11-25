@@ -197,12 +197,27 @@ fn follow_path_dependencies(workspace: &mut Workspace) {
             .collect();
         // `workspace = true` takes a dependency from the crate's workspace manifest.
         if inherits(&text) && !is_workspace_root(&text) {
-            let manifest = base.ancestors().skip(1).find_map(|dir| {
-                let text = std::fs::read_to_string(dir.join("Cargo.toml")).ok()?;
-                is_workspace_root(&text).then(|| (dir.to_path_buf(), text))
-            });
+            // `package.workspace` names the workspace; otherwise it is the nearest ancestor.
+            let named = key_values(&text, "workspace").into_iter().next();
+            let manifest = match named {
+                Some(named) => {
+                    let dir = normalize(&base.join(named));
+                    std::fs::read_to_string(dir.join("Cargo.toml"))
+                        .ok()
+                        .filter(|text| is_workspace_root(text))
+                        .map(|text| (dir, text))
+                }
+                None => base.ancestors().skip(1).find_map(|dir| {
+                    let text = std::fs::read_to_string(dir.join("Cargo.toml")).ok()?;
+                    is_workspace_root(&text).then(|| (dir.to_path_buf(), text))
+                }),
+            };
             match manifest {
                 Some((dir, text)) => {
+                    // Edits to that manifest are invisible when it is outside the repository.
+                    workspace
+                        .foreign_files
+                        .push(relative(&root, &dir.join("Cargo.toml")));
                     paths.extend(
                         key_values(&text, "path")
                             .into_iter()
@@ -494,6 +509,8 @@ pub fn from_metadata(metadata: &Value) -> Result<Workspace, String> {
     }
 
     let mut foreign: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    // Source directories of targets other than build scripts, with the declaring package.
+    let mut source_dirs: Vec<(String, usize)> = Vec::new();
     for (index, package) in raw.iter().enumerate() {
         let is_root = workspace.packages[index].dir.is_empty();
         for target in package["targets"].as_array().into_iter().flatten() {
@@ -506,6 +523,9 @@ pub fn from_metadata(metadata: &Value) -> Result<Workspace, String> {
                 .is_some_and(|kinds| kinds.iter().any(|kind| kind == "custom-build"));
             if is_build_script {
                 workspace.build_scripts.push(src.clone());
+            } else {
+                let dir = src.rsplit_once('/').map_or("", |(dir, _)| dir);
+                source_dirs.push((dir.to_string(), index));
             }
             if is_root {
                 let entry = src.split('/').next().unwrap_or_default().to_string();
@@ -551,6 +571,26 @@ pub fn from_metadata(metadata: &Value) -> Result<Workspace, String> {
     workspace.foreign = foreign.into_iter().collect();
     workspace.build_scripts.sort();
     workspace.root_entries.sort();
+    // A member inside the source directory of another package's target can hold modules of
+    // that target (`mod engine;` with a member at `src/engine/`). Count it as a dependency.
+    let mut nested = Vec::new();
+    for (source_dir, declarer) in &source_dirs {
+        for (member, package) in workspace.packages.iter().enumerate() {
+            if member != *declarer
+                && package.dir != *source_dir
+                && contains(source_dir, &package.dir)
+            {
+                nested.push((*declarer, member));
+            }
+        }
+    }
+    for (declarer, member) in nested {
+        let deps = &mut workspace.packages[declarer].deps;
+        if !deps.contains(&member) {
+            deps.push(member);
+            deps.sort_unstable();
+        }
+    }
     mark_cross_targets(&mut workspace);
 
     let config = &metadata["metadata"]["tia"];
@@ -776,6 +816,29 @@ mod tests {
             ["../c", "../d"]
         );
         assert!(override_paths("# paths = [\"../e\"]\nsearch-paths = 1").is_empty());
+    }
+
+    #[test]
+    fn members_in_another_package_source_directory_become_dependencies() {
+        let metadata = json!({
+            "workspace_root": "/nonexistent/ws",
+            "workspace_members": [
+                "path+file:///nonexistent/ws/app#app@0.1.0",
+                "path+file:///nonexistent/ws/app/src/engine#engine@0.1.0",
+            ],
+            "packages": [
+                package("app", "/nonexistent/ws/app", vec![], vec![
+                    target("lib", "/nonexistent/ws/app/src/lib.rs"),
+                ]),
+                package("engine", "/nonexistent/ws/app/src/engine", vec![], vec![
+                    target("lib", "/nonexistent/ws/app/src/engine/src/lib.rs"),
+                ]),
+            ],
+        });
+        let ws = from_metadata(&metadata).unwrap();
+        // app (index 0) now depends on engine (index 1).
+        assert_eq!(ws.packages[0].deps, [1]);
+        assert!(ws.packages[1].deps.is_empty());
     }
 
     #[test]

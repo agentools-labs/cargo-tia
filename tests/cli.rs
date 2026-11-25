@@ -1659,6 +1659,77 @@ fn unreadable_directories_select_the_whole_workspace() {
     }
 }
 
+#[test]
+fn member_inside_another_package_source_directory() {
+    let repo = Repo::new("nested-member");
+    repo.write(
+        "Cargo.toml",
+        "[workspace]\nresolver = \"2\"\nmembers = [\"app\", \"app/src/engine\"]\n",
+    );
+    repo.write(
+        "app/Cargo.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    repo.write("app/src/lib.rs", "mod engine;\n");
+    repo.write(
+        "app/src/engine/Cargo.toml",
+        "[package]\nname = \"engine\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[lib]\npath = \"mod.rs\"\n",
+    );
+    repo.write("app/src/engine/mod.rs", "pub fn e() {}\n");
+    repo.commit("nested member");
+    // app compiles engine/mod.rs as a module, without a Cargo dependency on engine.
+    repo.append("app/src/engine/mod.rs", "// changed\n");
+    assert_eq!(selected(&repo.select("HEAD", &[])), ["app", "engine"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn hidden_symlink_changes_select_the_whole_workspace() {
+    let repo = chain();
+    repo.write("crates/lonely/src/v1.rs", "// v1\n");
+    repo.write("crates/lonely/src/v2.rs", "// v2\n");
+    std::os::unix::fs::symlink("v1.rs", repo.path("crates/lonely/src/current.rs")).unwrap();
+    repo.commit("versions");
+    repo.git(&[
+        "update-index",
+        "--assume-unchanged",
+        "crates/lonely/src/current.rs",
+    ]);
+    fs::remove_file(repo.path("crates/lonely/src/current.rs")).unwrap();
+    std::os::unix::fs::symlink("v2.rs", repo.path("crates/lonely/src/current.rs")).unwrap();
+    let json = repo.select("HEAD", &[]);
+    assert!(is_full(&json), "{json:#}");
+}
+
+#[test]
+fn named_workspace_of_a_path_dependency() {
+    let outside = Repo::new("outside-named");
+    vendor_crate(&outside, "outer", &[]);
+    let repo = chain();
+    repo.append("Cargo.toml", "exclude = [\"other\", \"vendor\"]\n");
+    // `vendor/shim` names `other` as its workspace; `other` is not one of its ancestors.
+    repo.write(
+        "other/Cargo.toml",
+        &format!(
+            "[workspace]\nmembers = [\"../vendor/shim\"]\n\n[workspace.dependencies]\nouter = {{ path = {:?} }}\n",
+            outside.path("outer").display().to_string()
+        ),
+    );
+    repo.write(
+        "vendor/shim/Cargo.toml",
+        "[package]\nname = \"shim\"\nversion = \"0.1.0\"\nedition = \"2021\"\nworkspace = \"../../other\"\n\n[dependencies]\nouter.workspace = true\n",
+    );
+    repo.write("vendor/shim/src/lib.rs", "pub fn s() {}\n");
+    use_vendor_crate(&repo, "lonely", "shim");
+    repo.commit("named workspace");
+    let json = repo.select("HEAD", &[]);
+    assert!(is_full(&json), "{json:#}");
+    assert!(json["full_reasons"][0]
+        .as_str()
+        .unwrap()
+        .contains("outside the git repository"));
+}
+
 /// A small deterministic generator, so the property test needs no extra crate.
 struct Rng(u64);
 
