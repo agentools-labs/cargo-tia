@@ -197,24 +197,29 @@ fn short_selection_flag(arg: &str) -> bool {
     short_flag(arg, &['p', 'm'])
 }
 
-/// True when a group of short flags holds one of `wanted`. Only flags without a value (`-q`,
-/// `-v`, `-r`, `-h`, `-V`) can come before it: any other letter takes the rest as its value.
+/// True when a group of short flags holds one of `wanted`.
 fn short_flag(arg: &str, wanted: &[char]) -> bool {
-    let Some(group) = arg
+    wanted.iter().any(|&flag| short_value(arg, flag).is_some())
+}
+
+/// The value of short flag `wanted` in a group of short flags, such as `bindeps` in
+/// `-qZbindeps`: empty when the value is the next argument, `None` when the group does not
+/// hold the flag. Only flags without a value (`-q`, `-v`, `-r`, `-h`, `-V`) can come before
+/// it: any other letter takes the rest of the group as its value.
+fn short_value(arg: &str, wanted: char) -> Option<&str> {
+    let group = arg
         .strip_prefix('-')
-        .filter(|group| !group.starts_with('-'))
-    else {
-        return false;
-    };
-    for flag in group.chars() {
-        if wanted.contains(&flag) {
-            return true;
+        .filter(|group| !group.starts_with('-'))?;
+    for (index, flag) in group.char_indices() {
+        if flag == wanted {
+            let rest = &group[index + flag.len_utf8()..];
+            return Some(rest.strip_prefix('=').unwrap_or(rest));
         }
         if !matches!(flag, 'q' | 'v' | 'r' | 'h' | 'V') {
-            return false;
+            return None;
         }
     }
-    false
+    None
 }
 
 /// Arguments for the test command that Cargo checks against the selected packages: features,
@@ -391,14 +396,19 @@ fn metadata_args(options: &Options) -> Vec<OsString> {
     let mut forwarded = Vec::new();
     let mut args = options.passthrough.iter().take_while(|arg| *arg != "--");
     while let Some(arg) = args.next() {
-        if arg == "--config" || arg == "-Z" {
+        let text = arg.to_string_lossy();
+        if text == "--config" {
             if let Some(value) = args.next() {
                 forwarded.extend([arg.clone(), value.clone()]);
             }
-        } else {
-            let text = arg.to_string_lossy();
-            if text.starts_with("--config=") || text.starts_with("-Z") {
-                forwarded.push(arg.clone());
+        } else if text.starts_with("--config=") {
+            forwarded.push(arg.clone());
+        } else if let Some(value) = short_value(&text, 'Z') {
+            // Also in a group such as `-qZbindeps`: forward the flag alone.
+            if !value.is_empty() {
+                forwarded.push(OsString::from(format!("-Z{value}")));
+            } else if let Some(value) = args.next() {
+                forwarded.extend([OsString::from("-Z"), value.clone()]);
             }
         }
     }
@@ -864,6 +874,10 @@ mod tests {
             "-Z",
             "bindeps",
             "-Zgc",
+            "-qZbindeps",
+            "-vZ",
+            "x",
+            "-jZ",
             "--",
             "--config",
             "c.toml",
@@ -883,7 +897,10 @@ mod tests {
                 "--config=b=1",
                 "-Z",
                 "bindeps",
-                "-Zgc"
+                "-Zgc",
+                "-Zbindeps",
+                "-Z",
+                "x"
             ]
         );
     }

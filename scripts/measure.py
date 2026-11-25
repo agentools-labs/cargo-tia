@@ -37,9 +37,28 @@ def run(args, cwd, check=True):
 
 
 def failing_packages(stderr):
-    named = set(re.findall(r"`-p (\S+?)(?:@\S+)? ", stderr))
+    # Only Cargo's final summary counts: a test can run a nested Cargo whose output names
+    # other packages earlier. With one failing target the summary is the last "error: test
+    # failed, to rerun pass" line; with more, the "error: N targets failed:" line and the
+    # indented hints after it.
+    lines = stderr.splitlines()
+    summary = ""
+    for index in range(len(lines) - 1, -1, -1):
+        line = lines[index]
+        if line.startswith("error: test failed, to rerun pass"):
+            summary = line
+            break
+        if re.match(r"error: \d+ targets? failed:", line):
+            hints = []
+            for hint in lines[index + 1:]:
+                if not hint.startswith(" "):
+                    break
+                hints.append(hint)
+            summary = "\n".join(hints)
+            break
+    named = set(re.findall(r"`-p (\S+?)(?:@\S+)? ", summary))
     # In a workspace with one package, Cargo's hints name no package: "*" stands for it.
-    if not named and re.search(r"to rerun pass `--", stderr):
+    if not named and re.search(r"`--", summary):
         named.add("*")
     return sorted(named)
 
