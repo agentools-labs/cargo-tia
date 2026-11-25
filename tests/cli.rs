@@ -1398,7 +1398,8 @@ fn a_non_member_target_behind_a_link_keeps_its_declared_directory() {
     vendor_crate(&repo, "vendor/a", &[]);
     vendor_crate(&repo, "vendor/b", &[]);
     // a's library is declared in b's directory, through a link back into a. Rust finds
-    // `mod helper;` beside the declared path: vendor/b/src/helper.rs.
+    // `mod helper;` beside the declared path, vendor/b/src/helper.rs, so that directory holds
+    // a target of a outside a: a change there selects the full workspace, as for members.
     repo.append(
         "vendor/a/Cargo.toml",
         "\n[lib]\npath = \"../b/src/entry.rs\"\n",
@@ -1411,7 +1412,12 @@ fn a_non_member_target_behind_a_link_keeps_its_declared_directory() {
     repo.commit("linked target");
     repo.append("vendor/b/src/helper.rs", "// changed\n");
     let json = repo.select("HEAD", &[]);
-    assert!(selected(&json).contains(&"lonely".to_string()), "{json:#}");
+    assert!(is_full(&json), "{json:#}");
+    let reason = json["full_reasons"][0].as_str().unwrap();
+    assert!(
+        reason.contains("next to a target of `vendor/a`"),
+        "{json:#}"
+    );
 }
 
 #[test]
