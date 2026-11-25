@@ -168,7 +168,10 @@ fn parse(args: Vec<OsString>) -> Result<Parsed, String> {
             "--package" | "--workspace" | "--all" | "--exclude" | "--manifest-path"
         ) || short_selection_flag(&arg);
         // Nextest's build reuse fixes the packages and conflicts with `--workspace`.
-        let reuses = matches!(flag, "--archive-file" | "--binaries-metadata");
+        let reuses = matches!(
+            flag,
+            "--archive-file" | "--binaries-metadata" | "--cargo-metadata"
+        );
         if reuses {
             return Err(format!(
                 "`{arg}` after `--` reuses a build; run nextest directly for that"
@@ -584,6 +587,7 @@ mod tests {
             &["test", "--", "-qm../other/Cargo.toml"],
             &["nextest", "--", "--archive-file", "tests.tar.zst"],
             &["nextest", "--", "--binaries-metadata=meta.json"],
+            &["nextest", "--", "--cargo-metadata", "cached.json"],
             &["test", "list"],
             &["--bogus"],
         ] {

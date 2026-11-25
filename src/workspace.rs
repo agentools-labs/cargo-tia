@@ -132,7 +132,7 @@ pub fn load(cargo: &OsStr, manifest_path: Option<&Path>) -> Result<Workspace, St
 /// modules of that target, so the member counts as one of its users.
 fn add_nested_users(workspace: &mut Workspace) {
     for (src, declarer) in &workspace.targets {
-        if workspace.build_scripts.contains(src) {
+        if workspace.build_scripts.contains(src) && workspace.packages[*declarer].dir.is_empty() {
             continue;
         }
         let source_dir = src.rsplit_once('/').map_or("", |(dir, _)| dir);
@@ -563,7 +563,10 @@ pub fn from_metadata(metadata: &Value) -> Result<Workspace, String> {
                 .is_some_and(|kinds| kinds.iter().any(|kind| kind == "custom-build"));
             if is_build_script {
                 workspace.build_scripts.push(src.clone());
-            } else {
+            }
+            // A build script of the root package sits in the workspace root, which holds every
+            // member: its module tree is skipped. Other targets count.
+            if !(is_build_script && is_root) {
                 let dir = src.rsplit_once('/').map_or("", |(dir, _)| dir);
                 source_dirs.push((dir.to_string(), index));
             }
@@ -911,8 +914,8 @@ mod tests {
         };
         add_nested_users(&mut ws);
         assert_eq!(ws.foreign[0].1, [0, 1]);
-        // The build script's directory does not count.
-        assert_eq!(ws.foreign[1].1, [1]);
+        // The build script's directory counts too, except for the root package.
+        assert_eq!(ws.foreign[1].1, [0, 1]);
     }
 
     #[test]

@@ -1748,7 +1748,11 @@ fn case_only_renames_count() {
         repo.path("crates/lonely/src/Worker.rs"),
     )
     .unwrap();
-    assert_eq!(selected(&repo.select("HEAD", &[])), ["lonely"]);
+    let json = repo.select("HEAD", &[]);
+    assert_eq!(selected(&json), ["lonely"]);
+    // Both spellings count, so a glob for the old one still applies.
+    let json = repo.select("HEAD", &["--full-run", "crates/lonely/src/worker.rs"]);
+    assert!(is_full(&json), "{json:#}");
 }
 
 #[test]
@@ -1876,6 +1880,57 @@ fn weak_stat_settings_cannot_hide_edits() {
         .set_modified(before)
         .unwrap();
     assert_eq!(selected(&repo.select("HEAD", &[])), ["lonely"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn committed_only_distrusts_hidden_link_edits() {
+    let repo = chain();
+    std::os::unix::fs::symlink(
+        "../../core/src/lib.rs",
+        repo.path("crates/lonely/src/core.rs"),
+    )
+    .unwrap();
+    repo.commit("link");
+    repo.append("crates/core/src/lib.rs", "pub fn g() {}\n");
+    repo.commit("core");
+    repo.git(&[
+        "update-index",
+        "--skip-worktree",
+        "crates/lonely/src/core.rs",
+    ]);
+    fs::remove_file(repo.path("crates/lonely/src/core.rs")).unwrap();
+    std::os::unix::fs::symlink(
+        "../../mid/src/lib.rs",
+        repo.path("crates/lonely/src/core.rs"),
+    )
+    .unwrap();
+    let json = repo.select("HEAD~1", &["--committed"]);
+    assert!(is_full(&json), "{json:#}");
+}
+
+#[test]
+fn member_inside_a_build_script_source_directory() {
+    let repo = Repo::new("build-modules");
+    repo.write(
+        "Cargo.toml",
+        "[workspace]\nresolver = \"2\"\nmembers = [\"gen\", \"gen/build/backend\"]\n",
+    );
+    repo.write(
+        "gen/Cargo.toml",
+        "[package]\nname = \"gen\"\nversion = \"0.1.0\"\nedition = \"2021\"\nbuild = \"build/main.rs\"\n",
+    );
+    repo.write("gen/src/lib.rs", "pub fn g() {}\n");
+    repo.write("gen/build/main.rs", "mod backend;\nfn main() {}\n");
+    repo.write(
+        "gen/build/backend/Cargo.toml",
+        "[package]\nname = \"backend\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[lib]\npath = \"mod.rs\"\n",
+    );
+    repo.write("gen/build/backend/mod.rs", "pub fn b() {}\n");
+    repo.commit("build script modules");
+    // gen's build script compiles backend/mod.rs as a module.
+    repo.append("gen/build/backend/mod.rs", "// changed\n");
+    assert_eq!(selected(&repo.select("HEAD", &[])), ["backend", "gen"]);
 }
 
 /// A small deterministic generator, so the property test needs no extra crate.

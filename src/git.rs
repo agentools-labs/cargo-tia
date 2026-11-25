@@ -152,8 +152,9 @@ pub fn changed_files(
     if committed_only {
         (paths, special) = diff(&[&merge_base, "HEAD"])?;
         // The workspace graph comes from the working tree, so it must match HEAD.
-        let (mut dirty, dirty_links) = diff(&["HEAD"])?;
-        // Links are read from the working tree too.
+        let (mut dirty, mut dirty_links) = diff(&["HEAD"])?;
+        // Links are read from the working tree too, also where git hides them.
+        dirty_links.extend(hidden_links.iter().cloned());
         if let Some(link) = dirty_links.first() {
             return Err(fail(format!(
                 "`{link}` is a symbolic link or submodule with uncommitted changes"
@@ -171,6 +172,21 @@ pub fn changed_files(
     } else {
         (paths, special) = diff(&[&merge_base])?;
         let new_files = untracked()?;
+        // A case-only rename on a case-insensitive file system: git can still read the old
+        // spelling, so count both.
+        let tracked: std::collections::BTreeMap<String, &str> = index
+            .iter()
+            .filter_map(|entry| entry.split_once('\t').map(|(_, path)| path))
+            .map(|path| (path.to_lowercase(), path))
+            .collect();
+        for path in &new_files {
+            if let Some(old) = tracked
+                .get(&path.to_lowercase())
+                .filter(|old| **old != path)
+            {
+                paths.push(old.to_string());
+            }
+        }
         for path in &new_files {
             // A path that ends with `/` is a nested repository: git does not list its files.
             let link = std::fs::symlink_metadata(toplevel.join(path)).is_ok_and(|m| m.is_symlink());

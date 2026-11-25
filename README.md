@@ -96,8 +96,8 @@ Arguments after `--` go to the test command. They must not change the packages: 
    every file, so any change changes the package that holds it.
 5. It selects the changed packages and every member that depends on them, directly or through other
    members. Normal, dev, build, optional and target-specific dependencies all count. A member inside
-   the source directory of another package's target counts as its dependency, because that target can
-   compile the member's files as modules. Cargo does not
+   the source directory of another package's target (also a build script, except one of the root
+   package) counts as its dependency, because that target can compile the member's files as modules. Cargo does not
    report every edge, so two kinds of members count as dependents of every member:
    - a member that uses a path dependency that is not a member;
    - a member with registry or git dependencies, when a `[patch]` or `[replace]` entry points to a
@@ -211,7 +211,9 @@ This repository uses the tool on itself in [its CI workflow](.github/workflows/c
   the same for the base and the change: Cargo configuration in a parent directory or in `CARGO_HOME`,
   and submodules that are not checked out. The tool reads that configuration for patches, but does not
   see changes to it. Run the full workspace after you change the environment.
-- Run the tool as `cargo tia`: Cargo then gives it the path of its own binary. Run directly as
+- Run the tool as `cargo tia`: Cargo then gives it the path of its own binary. Rustup starts Cargo
+  first, and can download a missing toolchain that the workspace pins. For an offline call, run
+  `RUSTUP_AUTO_INSTALL=0 cargo tia list`. Run directly as
   `cargo-tia`, it calls `cargo` through rustup, and rustup older than 1.28 can download a missing
   toolchain that the workspace pins.
 - To compare the working tree, git runs the clean filters that the repository configures, for example
