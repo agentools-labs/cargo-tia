@@ -50,7 +50,8 @@ def cargo_test(args, cwd):
     start = time.monotonic()
     result = run(["cargo", "test", *args, "--no-fail-fast"], cwd, check=False)
     seconds = time.monotonic() - start
-    failing = failing_packages(result.stderr)
+    # A run that exits 0 has no failures, whatever its warnings say.
+    failing = failing_packages(result.stderr) if result.returncode != 0 else []
     broken = compile_failures(result.stderr)
     return {
         "seconds": round(seconds, 1),

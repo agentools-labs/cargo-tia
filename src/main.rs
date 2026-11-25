@@ -288,6 +288,35 @@ fn needs_workspace(
     None
 }
 
+/// The rules, plus a full-run file for a custom target specification (`--target spec.json`)
+/// after `--`: it applies to every package.
+fn with_target_spec(workspace: &Workspace, options: &Options) -> Rules {
+    let mut rules = options.rules.clone();
+    let args: Vec<String> = options
+        .passthrough
+        .iter()
+        .take_while(|arg| *arg != "--")
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    let cwd = std::env::current_dir().unwrap_or_default();
+    for (position, arg) in args.iter().enumerate() {
+        let value = match arg.split_once('=') {
+            Some(("--target", value)) => Some(value.to_string()),
+            None if arg == "--target" => args.get(position + 1).cloned(),
+            _ => None,
+        };
+        let Some(value) = value else {
+            continue;
+        };
+        let file = cwd.join(&value);
+        if file.is_file() {
+            let path = workspace::relative(&workspace.root, &workspace::normalize(&file));
+            rules.full_run.push(path);
+        }
+    }
+    rules
+}
+
 /// Cargo's matching of target names: `*`, `?` and `[...]` classes (`[!...]` negates).
 fn target_matches(pattern: &str, name: &str) -> bool {
     let pattern: Vec<char> = pattern.chars().collect();
@@ -373,7 +402,7 @@ fn main() -> ExitCode {
             Ok(changes) => {
                 let mut selection = select::select(
                     &workspace,
-                    &options.rules,
+                    &with_target_spec(&workspace, &options),
                     &changes.files,
                     &changes.symlinks,
                     &changes.special,

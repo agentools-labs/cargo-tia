@@ -694,6 +694,7 @@ fn test_runs_cargo_test_only_on_the_selection() {
         "crates/mid/src/lib.rs",
         "#[test]\nfn mid_runs() { assert_eq!(f(), 1); }\n",
     );
+    repo.append("crates/app/Cargo.toml", "\n[features]\nextra = []\n");
     repo.commit("tests");
 
     repo.append("crates/mid/src/lib.rs", "// changed\n");
@@ -725,6 +726,29 @@ fn test_runs_cargo_test_only_on_the_selection() {
     assert!(
         stdout(&output).contains("lonely is broken")
             || stderr(&output).contains("lonely is broken")
+    );
+
+    // A feature of an unselected package: real Cargo accepts it after the full-workspace
+    // fallback, runs everything, and reports lonely's failure.
+    let output = repo.tia(&[
+        "tia",
+        "test",
+        "--base",
+        "HEAD",
+        "--",
+        "--features",
+        "app/extra",
+    ]);
+    assert!(
+        stderr(&output).contains("selected: full workspace"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(
+        stdout(&output).contains("lonely is broken")
+            || stderr(&output).contains("lonely is broken"),
+        "Cargo ran the tests: {}",
+        stderr(&output)
     );
 }
 
@@ -1425,9 +1449,14 @@ fn deleted_skip_worktree_files_count_without_sparse_checkout() {
     ]);
     fs::remove_file(repo.path("crates/lonely/src/parser.rs")).unwrap();
     assert_eq!(selected(&repo.select("HEAD", &[])), ["lonely"]);
-    // In a sparse checkout, missing skip-worktree files are expected.
+    // In a sparse checkout, a missing file is left out on purpose, but Cargo cannot see the tests
+    // in it either: the result is uncertain.
     repo.git(&["config", "core.sparseCheckout", "true"]);
-    assert!(selected(&repo.select("HEAD", &[])).is_empty());
+    let json = repo.select("HEAD", &[]);
+    assert!(
+        json["full_reasons"][0].as_str().unwrap().contains("sparse"),
+        "{json:#}"
+    );
 }
 
 #[test]
@@ -2685,6 +2714,82 @@ fn a_file_restored_after_a_deleting_commit_selects_nothing() {
     repo.write("crates/lonely/src/data.rs", "// data\n");
     let json = repo.select(base.trim(), &[]);
     assert!(selected(&json).is_empty(), "{json:#}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_restored_file_that_became_a_link_counts() {
+    let repo = chain();
+    repo.write("shared/helper.sh", "#!/bin/sh\n");
+    repo.write("crates/lonely/tests/helper.sh", "#!/bin/sh\n");
+    repo.commit("helpers");
+    let base = repo.git(&["rev-parse", "HEAD"]);
+    repo.git(&["rm", "-q", "crates/lonely/tests/helper.sh"]);
+    repo.commit("delete helper");
+    // Same bytes, but a link now.
+    fs::create_dir_all(repo.path("crates/lonely/tests")).unwrap();
+    std::os::unix::fs::symlink(
+        "../../../shared/helper.sh",
+        repo.path("crates/lonely/tests/helper.sh"),
+    )
+    .unwrap();
+    let json = repo.select(base.trim(), &[]);
+    assert!(is_full(&json), "{json:#}");
+}
+
+#[test]
+fn sparse_checkouts_that_leave_out_files_select_the_whole_workspace() {
+    let repo = chain();
+    repo.write("crates/lonely/tests/it.rs", "#[test] fn t() {}\n");
+    repo.commit("integration test");
+    repo.git(&[
+        "sparse-checkout",
+        "set",
+        "--no-cone",
+        "/*",
+        "!/crates/lonely/tests/",
+    ]);
+    assert!(!repo.path("crates/lonely/tests/it.rs").exists());
+    let json = repo.select("HEAD", &[]);
+    assert!(is_full(&json), "{json:#}");
+    assert!(json["full_reasons"][0].as_str().unwrap().contains("sparse"));
+}
+
+#[test]
+fn a_custom_target_specification_selects_the_whole_workspace_when_it_changes() {
+    let repo = chain();
+    repo.write("crates/lonely/targets/custom.json", "{}\n");
+    repo.commit("target spec");
+    repo.write(
+        "crates/lonely/targets/custom.json",
+        "{ \"changed\": true }\n",
+    );
+    fs::write(
+        repo.path(".git/info/exclude"),
+        "fake-cargo.sh\ncargo-calls.log\n",
+    )
+    .unwrap();
+    let cargo = fake_cargo(&repo);
+    let output = isolated(Command::new(BIN))
+        .current_dir(&repo.dir)
+        .env("CARGO", &cargo)
+        .args([
+            "tia",
+            "test",
+            "--base",
+            "HEAD",
+            "--",
+            "--target",
+            "crates/lonely/targets/custom.json",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    let calls = fs::read_to_string(repo.path("cargo-calls.log")).unwrap();
+    assert_eq!(
+        calls,
+        "test --workspace --target crates/lonely/targets/custom.json\n"
+    );
 }
 
 /// A small deterministic generator, so the property test needs no extra crate.

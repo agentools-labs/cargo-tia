@@ -185,6 +185,21 @@ pub fn changed_files(
 
     let (mut paths, mut special);
     let mut uncertain = None;
+    // A sparse checkout leaves tracked files out of the working tree: Cargo cannot see the
+    // tests in them, whatever the selection.
+    if sparse {
+        let absent = index
+            .iter()
+            .filter_map(|entry| entry.split_once('\t'))
+            .find(|(meta, path)| {
+                meta.starts_with('S') && std::fs::symlink_metadata(toplevel.join(path)).is_err()
+            });
+        if let Some((_, path)) = absent {
+            uncertain = Some(format!(
+                "the sparse checkout leaves out tracked files such as `{path}`"
+            ));
+        }
+    }
     if committed_only {
         (paths, special) = diff(&[&merge_base, "HEAD"])?;
         // The tool reads the workspace, its configuration and links from the working tree, so
@@ -350,6 +365,10 @@ fn differs(toplevel: &Path, revision: &str, path: &str) -> bool {
     let (Some(mode), Some(_), Some(object)) = (fields.next(), fields.next(), fields.next()) else {
         return true; // not in that revision
     };
+    // A file that became a link, or a link that became a file: hashing would follow the link.
+    if metadata.is_symlink() != (mode == "120000") || mode == "160000" {
+        return true;
+    }
     let Ok(hash) = git(toplevel, &["hash-object", "--path", path, "--", path]) else {
         return true;
     };
