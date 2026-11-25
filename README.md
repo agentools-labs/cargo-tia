@@ -84,7 +84,8 @@ workspace.
    - **Ignored**: the file matches an ignore glob.
    - **Package**: the file is in the directory of a workspace member. The deepest member wins.
    - **Path dependency**: the file is in a path dependency that is not a member, or in a path
-     dependency of such a dependency. The tool reads those manifests as text to find them. The
+     dependency of such a dependency. The tool reads those manifests as text to find them, with the
+     dependencies that they inherit (`workspace = true`) from their own workspace manifest. The
      members that use the first one are changed.
    - **Outside**: the file is in no package. This selects the full workspace.
 
@@ -127,6 +128,8 @@ These changes select the full workspace:
 - A path dependency, local patch, `paths` override, target, build script, file that a non-member
   manifest names, or symbolic link target outside the git repository, also through a path dependency
   of a path dependency. Git cannot see changes there.
+- A non-member path dependency that inherits dependencies from a workspace manifest that the tool
+  cannot find.
 - With `--committed`: a `Cargo.toml` with uncommitted changes, or one that git hides with
   assume-unchanged or skip-worktree. The tool reads the workspace from the working tree, so the
   working tree must match `HEAD` there.
