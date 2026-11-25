@@ -3435,6 +3435,29 @@ fn a_link_restored_over_a_staged_file_still_reaches_its_target() {
 
 #[cfg(unix)]
 #[test]
+fn links_that_loop_select_the_whole_workspace_quickly() {
+    let repo = chain();
+    // Two links to their own directory double the paths below it with each round of links.
+    for name in ["here", "again"] {
+        std::os::unix::fs::symlink(".", repo.path(&format!("crates/lonely/src/{name}"))).unwrap();
+    }
+    // Unrelated links add rounds.
+    for index in 0..14 {
+        let link = repo.path(&format!("crates/app/src/l{index:02}.rs"));
+        std::os::unix::fs::symlink("lib.rs", link).unwrap();
+    }
+    repo.commit("links");
+    repo.append("crates/lonely/src/lib.rs", "// changed\n");
+    let started = std::time::Instant::now();
+    let json = repo.select("HEAD", &[]);
+    assert!(started.elapsed() < std::time::Duration::from_secs(20));
+    assert!(is_full(&json), "{json:#}");
+    assert!(json["full_reasons"][0].as_str().unwrap().contains("links"));
+    assert_eq!(json["changed_files"].as_array().unwrap().len(), 1);
+}
+
+#[cfg(unix)]
+#[test]
 fn a_link_removed_from_the_index_still_reaches_its_target() {
     let repo = chain();
     std::os::unix::fs::symlink(

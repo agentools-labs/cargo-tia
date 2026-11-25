@@ -63,18 +63,36 @@ def failing_packages(stderr):
     return sorted(named)
 
 
-def compile_failures(stderr):
-    return sorted(set(re.findall(r"could not compile `([^`]+)`", stderr)))
+def compile_failures(stderr, workspace):
+    # Only workspace packages: a test can build a fixture that is meant to fail.
+    return sorted(set(re.findall(r"could not compile `([^`]+)`", stderr)) & workspace)
 
 
-def cargo_test(args, cwd):
+def not_started(stderr):
+    # Only test binaries in the measured target directory: a test can run other processes.
+    target = os.path.realpath(os.environ["CARGO_TARGET_DIR"]) + os.sep
+    return any(
+        os.path.realpath(path).startswith(target)
+        for path in re.findall(r"could not execute process `([^`\s]+)", stderr)
+    )
+
+
+def workspace_names(repo):
+    metadata = json.loads(run(
+        ["cargo", "metadata", "--no-deps", "--format-version", "1", "--offline"], repo
+    ).stdout)
+    members = set(metadata["workspace_members"])
+    return {package["name"] for package in metadata["packages"] if package["id"] in members}
+
+
+def cargo_test(args, cwd, workspace):
     start = time.monotonic()
     # Colors would put escape codes into the summary that the script reads.
     result = run(["cargo", "test", "--color", "never", *args, "--no-fail-fast"], cwd, check=False)
     seconds = time.monotonic() - start
     # A run that exits 0 has no failures, whatever its warnings say.
     failing = failing_packages(result.stderr) if result.returncode != 0 else []
-    broken = compile_failures(result.stderr)
+    broken = compile_failures(result.stderr, workspace)
     return {
         "seconds": round(seconds, 1),
         "exit": result.returncode,
@@ -82,7 +100,7 @@ def cargo_test(args, cwd):
         "failing_packages": failing,
         # A test runner that could not start names packages too, but ran no test.
         "inconclusive": result.returncode != 0 and (
-            bool(broken) or not failing or "could not execute process" in result.stderr),
+            bool(broken) or not failing or not_started(result.stderr)),
     }
 
 
@@ -186,12 +204,13 @@ def main():
                 clean = lambda: (run(["git", "reset", "-q", "--hard"], repo),
                                  run(["git", "clean", "-ffdxq"], repo))
                 clean()
-                cargo_test(["--workspace"], repo)  # warm-up, untimed
+                names = workspace_names(repo)
+                cargo_test(["--workspace"], repo, names)  # warm-up, untimed
                 clean()
-                row["full_run"] = cargo_test(["--workspace"], repo)
+                row["full_run"] = cargo_test(["--workspace"], repo, names)
                 if data["selected"]:
                     clean()
-                    row["selected_run"] = cargo_test(data["cargo_args"], repo)
+                    row["selected_run"] = cargo_test(data["cargo_args"], repo, names)
                 else:
                     row["selected_run"] = {"seconds": 0.0, "exit": 0, "compile_failures": [],
                                            "failing_packages": [], "inconclusive": False}

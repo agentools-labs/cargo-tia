@@ -240,9 +240,11 @@ This repository uses the tool on itself in [its CI workflow](.github/workflows/c
   see changes to it. Run the full workspace after you change the environment.
 - Run the tool as `cargo tia`: Cargo then gives it the path of its own binary. Rustup starts Cargo
   first, and can download a missing toolchain that the workspace pins. For an offline call, run
-  `RUSTUP_AUTO_INSTALL=0 cargo tia list`. Run directly as
-  `cargo-tia`, it calls `cargo` through rustup, and rustup older than 1.28 can download a missing
-  toolchain that the workspace pins.
+  `RUSTUP_AUTO_INSTALL=0 cargo tia list`. Rustup older than 1.28 ignores that variable: run the
+  installed toolchain's Cargo instead, for example
+  `~/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo tia list`. Run directly as
+  `cargo-tia`, the tool calls `cargo` through rustup with `RUSTUP_AUTO_INSTALL=0`, which rustup older
+  than 1.28 also ignores.
 - To compare the working tree, git runs the clean filters that the repository configures, for example
   Git LFS, as `git status` does. The tool turns off `core.fsmonitor` hooks.
 - Windows is not tested.

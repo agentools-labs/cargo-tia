@@ -191,6 +191,10 @@ pub fn classify(workspace: &Workspace, rules: &Rules, path: &str) -> Effect {
 /// Selects the changed packages and every package that depends on them, directly or not.
 /// Any file that is a full-run file or lies outside every package selects the full workspace.
 ///
+/// More paths than this reached through links: the links loop, for example two links to their
+/// own directory, and the selection is the full workspace.
+const MAX_LINK_PATHS: usize = 10_000;
+
 /// The part of `path` below `target`, by whole path segments and without regard to case (a
 /// case-insensitive file system reaches a target under any spelling, accented letters
 /// included): empty for the target itself, `/rest` below it, `None` elsewhere.
@@ -227,8 +231,10 @@ pub fn select(
     // target can be missing. Each round follows every link once, so the rounds are bounded.
     let mut reached: Vec<(String, Option<String>)> =
         files.iter().map(|path| (path.clone(), None)).collect();
+    let mut seen: std::collections::HashSet<String> = files.iter().cloned().collect();
     let mut frontier = reached.clone();
-    for _ in 0..symlinks.len() {
+    let mut looping = false;
+    'rounds: for _ in 0..symlinks.len() {
         let mut next = Vec::new();
         for (path, origin) in &frontier {
             for (link, target) in symlinks {
@@ -245,8 +251,11 @@ pub fn select(
                     };
                     format!("{link}{rest}")
                 };
-                let new = !reached.iter().any(|(known, _)| *known == via);
-                if new {
+                if seen.insert(via.clone()) {
+                    if seen.len() - files.len() > MAX_LINK_PATHS {
+                        looping = true;
+                        break 'rounds;
+                    }
                     let origin = origin.clone().unwrap_or_else(|| path.clone());
                     reached.push((via.clone(), Some(origin.clone())));
                     next.push((via, Some(origin)));
@@ -257,6 +266,13 @@ pub fn select(
             break;
         }
         frontier = next;
+    }
+    if looping {
+        // Report the changed files, not the paths of the loop.
+        reached.retain(|(_, origin)| origin.is_none());
+        full_reasons.push(format!(
+            "symbolic links reach more than {MAX_LINK_PATHS} paths, as links that loop do"
+        ));
     }
     reached.sort();
     for (path, link_to) in reached {
