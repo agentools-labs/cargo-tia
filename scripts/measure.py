@@ -85,29 +85,32 @@ def not_started(stderr):
     return any(hint in hints for hint in causes)
 
 
-def compile_failures(stderr, workspace):
-    # Only workspace packages: a test can build a fixture that is meant to fail.
-    return sorted(set(re.findall(r"could not compile `([^`]+)`", stderr)) & workspace)
+def build_phase(stderr):
+    # Cargo builds everything before it runs the first test binary. A test can run a nested
+    # Cargo, on a fixture that is meant to fail, say: its output comes later.
+    started = re.search(r"^\s+(?:Running|Doc-tests) ", stderr, re.M)
+    return stderr[:started.start()] if started else stderr
 
 
-def workspace_info(repo):
-    """The names of the workspace members and the workspace root."""
+def compile_failures(stderr):
+    return sorted(set(re.findall(r"could not compile `([^`]+)`", build_phase(stderr))))
+
+
+def workspace_root(repo):
     metadata = json.loads(run(
         ["cargo", "metadata", "--no-deps", "--format-version", "1", "--offline"], repo
     ).stdout)
-    members = set(metadata["workspace_members"])
-    names = {package["name"] for package in metadata["packages"] if package["id"] in members}
-    return names, metadata["workspace_root"]
+    return metadata["workspace_root"]
 
 
-def cargo_test(args, cwd, workspace):
+def cargo_test(args, cwd):
     start = time.monotonic()
     # Colors would put escape codes into the summary that the script reads.
     result = run(["cargo", "test", "--color", "never", *args, "--no-fail-fast"], cwd, check=False)
     seconds = time.monotonic() - start
     # A run that exits 0 has no failures, whatever its warnings say.
     failing = failing_packages(result.stderr) if result.returncode != 0 else []
-    broken = compile_failures(result.stderr, workspace)
+    broken = compile_failures(result.stderr)
     return {
         "seconds": round(seconds, 1),
         "exit": result.returncode,
@@ -218,11 +221,10 @@ def main():
             if index < timed_count:
                 build = run(["cargo", "test", "--workspace", "--no-run"], repo, check=False)
                 row["build_ok"] = build.returncode == 0
-                names, workspace_root = workspace_info(repo)
                 # The build resolved the dependencies. Cleaning deletes an untracked Cargo.lock
                 # (and resets a tracked one): put the build's lockfile back, so that every run
                 # uses the same resolution without resolving again.
-                lock_path = os.path.join(workspace_root, "Cargo.lock")
+                lock_path = os.path.join(workspace_root(repo), "Cargo.lock")
                 lock = None
                 if os.path.exists(lock_path):
                     with open(lock_path, "rb") as handle:
@@ -238,12 +240,12 @@ def main():
                             handle.write(lock)
 
                 clean()
-                cargo_test(["--workspace", *locked], repo, names)  # warm-up, untimed
+                cargo_test(["--workspace", *locked], repo)  # warm-up, untimed
                 clean()
-                row["full_run"] = cargo_test(["--workspace", *locked], repo, names)
+                row["full_run"] = cargo_test(["--workspace", *locked], repo)
                 if data["selected"]:
                     clean()
-                    row["selected_run"] = cargo_test([*data["cargo_args"], *locked], repo, names)
+                    row["selected_run"] = cargo_test([*data["cargo_args"], *locked], repo)
                 else:
                     row["selected_run"] = {"seconds": 0.0, "exit": 0, "compile_failures": [],
                                            "failing_packages": [], "inconclusive": False}

@@ -43,9 +43,9 @@ pub struct Workspace {
     /// Cargo configuration files that the tool read, at the path Cargo uses and at the file it
     /// resolves to. A change to one selects the full workspace.
     pub config_files: Vec<String>,
-    /// Files and directories that the commands of nextest scripts name, from
-    /// `.config/nextest.toml`. A script can prepare the tests of any package.
-    pub nextest_files: Vec<String>,
+    /// True when `.config/nextest.toml` defines or uses scripts. A setup or wrapper script
+    /// can prepare the tests of any package, from inputs the tool cannot know.
+    pub nextest_scripts: bool,
     /// Included configuration files, each with the configuration file that includes it.
     pub config_includes: Vec<(String, String)>,
     /// Files behind member manifests that are symbolic links.
@@ -155,41 +155,30 @@ pub fn load(
         let target = relative(&workspace.root, &target);
         workspace.manifest_targets.push(target);
     }
-    workspace.nextest_files = nextest_script_files(&workspace.root);
+    workspace.nextest_scripts = defines_nextest_scripts(&workspace.root);
     Ok(workspace)
 }
 
-/// The paths that the commands of nextest scripts name, relative to the workspace root: each
-/// word of a `command` or `command-line` value that holds a `/` or names a file there. What
-/// else a command reads, the tool cannot know.
-fn nextest_script_files(root: &Path) -> Vec<String> {
+/// True when nextest's workspace configuration defines or uses scripts: a table or key whose
+/// dotted name has a `script` or `scripts` part, such as `[scripts.setup.db]`,
+/// `[script.db]` or `[[profile.default.scripts]]`.
+fn defines_nextest_scripts(root: &Path) -> bool {
     let Ok(text) = std::fs::read_to_string(root.join(".config/nextest.toml")) else {
-        return Vec::new();
+        return false;
     };
-    let commands = key_strings(&text, "command")
-        .into_iter()
-        .chain(key_values(&text, "command"))
-        .chain(key_strings(&text, "command-line"))
-        .chain(key_values(&text, "command-line"));
-    let mut files = Vec::new();
-    for command in commands {
-        for word in command.split_whitespace() {
-            let mut word = word.trim_matches(['"', '\'']);
-            while let Some(rest) = word.strip_prefix("./") {
-                word = rest;
-            }
-            if word.is_empty() || word.starts_with('-') {
-                continue;
-            }
-            let path = root.join(word);
-            if word.contains('/') || path.exists() {
-                files.push(relative(root, &normalize(&path)));
-            }
+    text.lines().any(|line| {
+        let line = line.trim();
+        if line.starts_with('#') {
+            return false;
         }
-    }
-    files.sort();
-    files.dedup();
-    files
+        let name = match line.strip_prefix('[') {
+            Some(header) => header.split(']').next().unwrap_or_default(),
+            None => line.split('=').next().unwrap_or_default(),
+        };
+        name.trim_start_matches('[')
+            .split('.')
+            .any(|part| matches!(part.trim().trim_matches(['"', '\'']), "script" | "scripts"))
+    })
 }
 
 /// A non-member path dependency inside the source directory of a member's target can hold

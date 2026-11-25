@@ -42,8 +42,11 @@ error: 2 targets failed:
     `-p b --doc`
 """
 
-# Output of a Cargo that a test runs on a fixture: it comes before the outer summary.
-NESTED = """error: could not compile `fixture` (lib) due to 1 previous error
+RUNNING = "     Running unittests src/lib.rs (target/debug/deps/b-0123)\n"
+
+# Output of a Cargo that a test runs on a fixture: it comes after a test binary started and
+# before the outer summary. The fixture can have the name of a workspace member.
+NESTED = """error: could not compile `b` (lib) due to 1 previous error
 error: test failed, to rerun pass `-p fixture --lib`
 
 Caused by:
@@ -68,12 +71,15 @@ class Parsers(unittest.TestCase):
         self.assertTrue(measure.not_started(doctest))
 
     def test_nested_cargo_output_does_not_count(self):
-        self.assertEqual(measure.failing_packages(NESTED + FAILED), ["b"])
-        self.assertFalse(measure.not_started(NESTED + FAILED))
-        self.assertEqual(measure.compile_failures(NESTED + FAILED, {"b"}), [])
-        self.assertEqual(
-            measure.compile_failures(NESTED + "error: could not compile `b` (lib)\n", {"b"}),
-            ["b"])
+        nested = RUNNING + NESTED + FAILED
+        self.assertEqual(measure.failing_packages(nested), ["b"])
+        self.assertFalse(measure.not_started(nested))
+        self.assertEqual(measure.compile_failures(nested), [])
+
+    def test_compile_failures_of_the_build(self):
+        build = "error: could not compile `b` (lib) due to 1 previous error\n"
+        self.assertEqual(measure.compile_failures(build), ["b"])
+        self.assertEqual(measure.compile_failures(build + RUNNING + NESTED), ["b"])
 
     def test_one_package_workspace(self):
         self.assertEqual(

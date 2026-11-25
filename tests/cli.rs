@@ -3289,31 +3289,32 @@ fn nextest_configuration_selects_the_whole_workspace_despite_ignore_globs() {
 }
 
 #[test]
-fn files_that_nextest_scripts_run_select_the_whole_workspace() {
+fn nextest_scripts_make_any_change_select_the_whole_workspace() {
     let repo = chain();
-    repo.write(
-        ".config/nextest.toml",
-        "[scripts.setup.db]\ncommand = \"./crates/lonely/tests/setup-db.sh --fast\"\n\n\
-         [scripts.setup.cache]\ncommand = { command-line = \"sh crates/lonely/tools/cache\", relative-to = \"workspace-root\" }\n",
-    );
-    repo.write("crates/lonely/tests/setup-db.sh", "#!/bin/sh\n");
-    repo.write("crates/lonely/tools/cache/warm.sh", "#!/bin/sh\n");
-    repo.commit("setup scripts");
-    repo.append("crates/lonely/tests/setup-db.sh", "# changed\n");
-    let json = repo.select("HEAD", &[]);
-    assert!(is_full(&json), "{json:#}");
-    assert!(json["full_reasons"][0]
-        .as_str()
-        .unwrap()
-        .contains("nextest script"));
-    // A directory that an inline-table command names.
-    repo.git(&["checkout", "-q", "--", "."]);
-    repo.append("crates/lonely/tools/cache/warm.sh", "# changed\n");
-    assert!(is_full(&repo.select("HEAD", &[])));
-    // An ordinary file of the same package selects only its package.
-    repo.git(&["checkout", "-q", "--", "."]);
+    repo.write(".config/nextest.toml", "[profile.default]\nretries = 1\n");
+    repo.commit("nextest configuration without scripts");
     repo.append("crates/lonely/src/lib.rs", "// changed\n");
     assert_eq!(selected(&repo.select("HEAD", &[])), ["lonely"]);
+    repo.git(&["checkout", "-q", "--", "."]);
+    for scripts in [
+        "[scripts.setup.db]\ncommand = [\"./crates/lonely/tests/setup database.sh\"]\n",
+        "[script.db]\ncommand = 'cargo run -p lonely'\n",
+        "[[profile.default.scripts]]\nfilter = 'all()'\nsetup = 'db'\n",
+    ] {
+        repo.write(".config/nextest.toml", scripts);
+        repo.commit("nextest scripts");
+        // No change: nothing to select.
+        let json = repo.select("HEAD", &[]);
+        assert!(selected(&json).is_empty() && !is_full(&json), "{json:#}");
+        repo.append("crates/lonely/src/lib.rs", "// changed\n");
+        let json = repo.select("HEAD", &[]);
+        assert!(is_full(&json), "{scripts}: {json:#}");
+        assert!(json["full_reasons"][0]
+            .as_str()
+            .unwrap()
+            .contains("scripts"));
+        repo.git(&["checkout", "-q", "--", "."]);
+    }
 }
 
 #[test]
@@ -3433,6 +3434,39 @@ fn target_specifications_found_through_rust_target_path() {
     assert!(output.status.success(), "{}", stderr(&output));
     let calls = fs::read_to_string(repo.path("cargo-calls.log")).unwrap();
     assert_eq!(calls, "test --workspace --target board\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn target_specifications_found_in_the_current_directory() {
+    let repo = chain();
+    repo.write("crates/lonely/board.json", "{}\n");
+    repo.commit("board target");
+    fs::write(
+        repo.path(".git/info/exclude"),
+        "fake-cargo.sh\ncargo-calls.log\n",
+    )
+    .unwrap();
+    let cargo = fake_cargo(&repo);
+    // Without RUST_TARGET_PATH, rustc finds board.json in its current directory.
+    let run = || {
+        let output = isolated(Command::new(BIN))
+            .current_dir(repo.path("crates/lonely"))
+            .env("CARGO", &cargo)
+            .args(["tia", "test", "--base", "HEAD", "--", "--target", "board"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", stderr(&output));
+    };
+    repo.write("crates/lonely/board.json", "{ \"changed\": true }\n");
+    run();
+    fs::remove_file(repo.path("crates/lonely/board.json")).unwrap();
+    run();
+    let calls = fs::read_to_string(repo.path("cargo-calls.log")).unwrap();
+    assert_eq!(
+        calls,
+        "test --workspace --target board\ntest --workspace --target board\n"
+    );
 }
 
 #[cfg(unix)]

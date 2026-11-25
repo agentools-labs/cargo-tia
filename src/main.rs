@@ -321,13 +321,20 @@ fn with_target_spec(workspace: &Workspace, options: &Options) -> Rules {
             let path = workspace::relative(&workspace.root, &workspace::normalize(&file));
             rules.full_run.push(path);
         }
-        // A target name that rustc looks up as `<name>.json` in RUST_TARGET_PATH.
-        if let Some(search) = std::env::var_os("RUST_TARGET_PATH") {
-            for dir in std::env::split_paths(&search) {
-                let spec = cwd.join(dir).join(format!("{value}.json"));
-                let path = workspace::relative(&workspace.root, &workspace::normalize(&spec));
-                rules.full_run.push(path);
-            }
+        // A target name that rustc looks up as `<name>.json` in RUST_TARGET_PATH. Unset, the
+        // search path is empty, which rustc reads as its current directory: Cargo's, or the
+        // workspace root, where Cargo runs rustc for members.
+        let search = std::env::var_os("RUST_TARGET_PATH");
+        let mut dirs: Vec<PathBuf> = std::env::split_paths(&search.clone().unwrap_or_default())
+            .map(|dir| cwd.join(dir))
+            .collect();
+        if search.is_none() {
+            dirs.push(workspace.root.clone());
+        }
+        for dir in dirs {
+            let spec = dir.join(format!("{value}.json"));
+            let path = workspace::relative(&workspace.root, &workspace::normalize(&spec));
+            rules.full_run.push(path);
         }
     }
     rules
@@ -487,6 +494,12 @@ fn main() -> ExitCode {
                     .filter(|_| !changes.files.is_empty())
                 {
                     let reason = format!("Cargo `paths` override `{dir}` can replace any package");
+                    selection.make_full(&workspace, reason);
+                }
+                if workspace.nextest_scripts && !changes.files.is_empty() {
+                    let reason = "`.config/nextest.toml` defines scripts, which can prepare the \
+                                  tests of any package"
+                        .to_string();
                     selection.make_full(&workspace, reason);
                 }
                 for dir in &workspace.unresolved {
