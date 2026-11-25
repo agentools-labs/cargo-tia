@@ -76,7 +76,7 @@ workspace.
 2. It lists the files that changed since the merge base. The list includes staged, unstaged and
    untracked files, and edits to files marked assume-unchanged or skip-worktree. Without a sparse
    checkout, a missing skip-worktree file counts as deleted. Git configuration
-   such as `diff.ignoreSubmodules` or `core.fsmonitor` cannot hide a change. With `--committed`, the list includes only
+   such as `diff.ignoreSubmodules`, `core.fsmonitor` or `core.fileMode` cannot hide a change. With `--committed`, the list includes only
    committed changes.
 3. It reads the workspace with `cargo metadata --no-deps --offline`.
 4. It gives each changed file one effect, in this order:
@@ -110,7 +110,9 @@ These changes select the full workspace:
 - `rust-toolchain`, `rust-toolchain.toml`, `.cargo/config` and `.cargo/config.toml`, at any depth.
 - `build.rs` at any depth, each build script that `cargo metadata` reports, and the custom build
   scripts of path dependencies that are not members.
-- A changed symbolic link or submodule. Its effect on other paths is unknown.
+- A changed symbolic link or submodule, or an untracked nested repository. Its effect on other paths
+  is unknown.
+- A Cargo configuration file that another configuration file includes.
 - A file in a source replacement directory (`directory` or `local-registry` in Cargo configuration).
   Any member can use the registry packages there.
 - A file in a directory that holds a target of another package, for example
