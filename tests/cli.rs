@@ -264,6 +264,17 @@ fn full_run_files_select_the_whole_workspace() {
 }
 
 #[test]
+fn deleted_build_script_selects_the_whole_workspace() {
+    let repo = chain();
+    repo.write("crates/lonely/build.rs", "fn main() {}\n");
+    repo.commit("build script");
+    fs::remove_file(repo.path("crates/lonely/build.rs")).unwrap();
+    // Cargo no longer reports the deleted script, so the `**/build.rs` rule must catch it.
+    let json = repo.select("HEAD", &[]);
+    assert!(is_full(&json), "{json:#}");
+}
+
+#[test]
 fn custom_build_script_paths_select_the_whole_workspace() {
     let repo = chain();
     let manifest = fs::read_to_string(repo.path("crates/lonely/Cargo.toml")).unwrap();

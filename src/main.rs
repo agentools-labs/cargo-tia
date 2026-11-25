@@ -44,8 +44,9 @@ changed, or when git cannot tell what changed. Configure globs in the workspace 
   full-run = [\"ci/**\"]
   ignore = [\"docs/**\"]
 
-ARGS after `--` go to the test command. With an empty selection, test and nextest run
-nothing and exit 0.
+ARGS after `--` go to the test command, so `cargo tia test -- --release -- --nocapture`
+runs `cargo test -p ... --release -- --nocapture`. With an empty selection, test and
+nextest run nothing and exit 0.
 ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,6 +137,12 @@ fn parse(args: Vec<OsString>) -> Result<Parsed, String> {
         }
         if inline.is_some() && matches!(flag.as_str(), "--json" | "--committed") {
             return Err(format!("{flag} takes no value"));
+        }
+    }
+    // A base that git could read as an option is never a revision.
+    if let Some(base) = &options.base {
+        if base.is_empty() || base.starts_with('-') {
+            return Err(format!("--base needs a revision, not `{base}`"));
         }
     }
     if options.json && options.mode != Mode::List {
@@ -414,6 +421,8 @@ mod tests {
             &["list", "--", "x"],
             &["--base"],
             &["--json=yes"],
+            &["--base", "--output=x"],
+            &["--base="],
             &["test", "list"],
             &["--bogus"],
         ] {
