@@ -352,13 +352,14 @@ fn overrides(workspace: &Workspace) -> Overrides {
         if !seen.insert(file.clone()) {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(&file) else {
-            continue;
-        };
+        // Record the path before reading it: deleting a configuration file is a change too.
         if !file.ends_with("Cargo.toml") {
             config_files.push(relative(root, &file));
             config_files.push(relative(root, &normalize(&file)));
         }
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
         let paths = patch_paths(&text);
         let mut recursive = Vec::new();
         if !file.ends_with("Cargo.toml") {

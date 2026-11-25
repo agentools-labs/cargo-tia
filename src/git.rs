@@ -161,7 +161,12 @@ pub fn changed_files(
             )));
         }
         dirty.extend(untracked()?);
-        dirty.extend(hidden.iter().cloned());
+        dirty.extend(
+            hidden
+                .iter()
+                .filter(|path| differs(&toplevel, "HEAD", path))
+                .cloned(),
+        );
         let root = normalize(workspace_root);
         let read = |path: &String| inputs.contains(&relative(&root, &toplevel.join(path)));
         if let Some(manifest) = dirty.iter().find(|path| is_input(path) || read(path)) {
@@ -195,7 +200,11 @@ pub fn changed_files(
             }
         }
         paths.extend(new_files);
-        paths.extend(hidden);
+        paths.extend(
+            hidden
+                .into_iter()
+                .filter(|path| differs(&toplevel, &merge_base, path)),
+        );
         special.extend(hidden_links);
     }
 
@@ -237,6 +246,37 @@ pub fn changed_files(
         symlinks,
         repository: relative(&root, &toplevel),
     })
+}
+
+/// For a file that git hides (assume-unchanged or skip-worktree): true unless its working-tree
+/// content and executable bit match `revision`. Any doubt counts as a difference.
+fn differs(toplevel: &Path, revision: &str, path: &str) -> bool {
+    let file = toplevel.join(path);
+    let Ok(metadata) = std::fs::symlink_metadata(&file) else {
+        return true; // deleted
+    };
+    // "<mode> <type> <object>\t<path>"
+    let Ok(entry) = git(toplevel, &["ls-tree", revision, "--", path]) else {
+        return true;
+    };
+    let mut fields = entry.split_whitespace();
+    let (Some(mode), Some(_), Some(object)) = (fields.next(), fields.next(), fields.next()) else {
+        return true; // not in that revision
+    };
+    let Ok(hash) = git(toplevel, &["hash-object", "--path", path, "--", path]) else {
+        return true;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let executable = metadata.permissions().mode() & 0o111 != 0;
+        if executable != (mode == "100755") {
+            return true;
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = (metadata, mode);
+    hash.trim() != object
 }
 
 /// The branch that `origin/HEAD` points to. No guess when it is not set.

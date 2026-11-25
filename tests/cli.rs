@@ -896,6 +896,10 @@ fn committed_only_distrusts_hidden_manifests() {
         "--assume-unchanged",
         "crates/app/Cargo.toml",
     ]);
+    // Unchanged, the hidden manifest is fine.
+    assert!(!is_full(&repo.select("HEAD~1", &["--committed"])));
+    // Edited behind git's back, it is not.
+    repo.append("crates/app/Cargo.toml", "\n");
     let json = repo.select("HEAD~1", &["--committed"]);
     assert!(is_full(&json), "{json:#}");
 }
@@ -1800,7 +1804,7 @@ fn committed_only_distrusts_uncommitted_cargo_configuration() {
 }
 
 #[test]
-fn path_dependency_inside_a_member_source_directory() {
+fn crate_inside_a_member_source_directory_that_another_member_uses() {
     let repo = chain();
     repo.append("Cargo.toml", "exclude = [\"crates/app/src/engine\"]\n");
     // app compiles engine/mod.rs as a module; engine is also a non-member crate of lonely.
@@ -1821,12 +1825,9 @@ fn path_dependency_inside_a_member_source_directory() {
     repo.commit("engine");
     repo.append("crates/app/src/engine/mod.rs", "// changed\n");
     let json = repo.select("HEAD", &[]);
-    // Cargo 1.99 makes `engine` a member despite `exclude`; either way app and lonely run.
-    let got = selected(&json);
-    assert!(
-        got.contains(&"app".to_string()) && got.contains(&"lonely".to_string()),
-        "{json:#}"
-    );
+    // Cargo 1.99 makes `engine` a member despite `exclude`, so the nested-member rule applies.
+    // A unit test in workspace.rs covers the non-member case.
+    assert_eq!(selected(&json), ["app", "engine", "lonely"], "{json:#}");
 }
 
 #[test]
@@ -2044,6 +2045,34 @@ fn includes_from_cargo_home_are_environment() {
         .unwrap();
     let json: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(selected(&json), ["lonely"], "{json:#}");
+}
+
+#[test]
+fn deleted_optional_include_selects_the_whole_workspace() {
+    let repo = chain();
+    repo.write(
+        ".cargo/config.toml",
+        "include = [{ path = \"../crates/lonely/test-env.toml\", optional = true }]\n",
+    );
+    repo.write("crates/lonely/test-env.toml", "[env]\nMODE = \"fast\"\n");
+    repo.commit("optional include");
+    fs::remove_file(repo.path("crates/lonely/test-env.toml")).unwrap();
+    let json = repo.select("HEAD", &[]);
+    assert!(is_full(&json), "{json:#}");
+}
+
+#[test]
+fn hidden_files_without_changes_select_nothing() {
+    let repo = chain();
+    repo.git(&[
+        "update-index",
+        "--assume-unchanged",
+        "crates/app/Cargo.toml",
+    ]);
+    repo.git(&["update-index", "--skip-worktree", "crates/mid/src/lib.rs"]);
+    let json = repo.select("HEAD", &[]);
+    assert!(!is_full(&json), "{json:#}");
+    assert!(selected(&json).is_empty(), "{json:#}");
 }
 
 /// A small deterministic generator, so the property test needs no extra crate.
