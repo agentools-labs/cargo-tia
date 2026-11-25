@@ -237,20 +237,17 @@ fn dependents_closure(workspace: &Workspace, changed: &[usize]) -> Vec<(usize, R
     }
     // `cargo metadata --no-deps` does not list the dependencies of a path dependency that is
     // not a member. It can depend on any member, so its users depend on every member.
-    let mut uncertain: Vec<usize> = workspace
-        .foreign
-        .iter()
-        .flat_map(|(_, users)| users.iter().copied())
-        .collect();
-    // With a `[patch]`, a registry package can resolve to a member, and other registry
-    // packages can depend on it. Then every package with registry dependencies is uncertain.
-    if !workspace.patch_files.is_empty() {
-        uncertain.extend((0..count).filter(|&index| workspace.packages[index].external));
+    for (_, users) in &workspace.foreign {
+        for (member, member_dependents) in dependents.iter_mut().enumerate() {
+            member_dependents.extend(users.iter().filter(|&&user| user != member));
+        }
     }
-    uncertain.sort_unstable();
-    uncertain.dedup();
-    for (member, member_dependents) in dependents.iter_mut().enumerate() {
-        member_dependents.extend(uncertain.iter().filter(|&&user| user != member));
+    // A registry package can resolve to a patched member, and other registry packages can
+    // depend on it. So every package with registry dependencies depends on a patched member.
+    for &patched in &workspace.patched {
+        dependents[patched].extend(
+            (0..count).filter(|&index| index != patched && workspace.packages[index].external),
+        );
     }
     let mut reason: Vec<Option<Reason>> = vec![None; count];
     let mut queue = VecDeque::new();
@@ -598,10 +595,16 @@ mod tests {
             names(&ws, &select(&ws, &Rules::default(), &changed, &[], &[])),
             ["app", "core", "mid"]
         );
-        ws.patch_files = vec!["Cargo.toml".into()];
+        ws.patched = vec![1]; // core
         assert_eq!(
             names(&ws, &select(&ws, &Rules::default(), &changed, &[], &[])),
             ["app", "core", "mid", "tool"]
+        );
+        // A member that no patch points to keeps its own dependents.
+        let changed = files(&["crates/mid/src/lib.rs"]);
+        assert_eq!(
+            names(&ws, &select(&ws, &Rules::default(), &changed, &[], &[])),
+            ["app", "mid"]
         );
     }
 

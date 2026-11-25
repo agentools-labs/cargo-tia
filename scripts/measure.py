@@ -5,7 +5,8 @@ Usage: measure.py CARGO_TIA REPO_DIR SELECT_COMMITS TIMED_COMMITS OUT_JSON
 
 For each of the last SELECT_COMMITS first-parent commits C, it records the selection of
 `cargo tia list --json --committed --base C^1` at C. For the newest TIMED_COMMITS of them,
-it builds the workspace tests, then times `cargo test --workspace --no-fail-fast` and
+it builds the workspace and runs its tests once untimed (the first run after a build does
+extra work), then times `cargo test --workspace --no-fail-fast` and
 `cargo test <selection> --no-fail-fast`, and records the packages with failing tests in
 each run. A package that fails in the full run but is not selected is a missed failure. A
 full run that fails to compile, or exits non-zero without naming a failing package, makes
@@ -85,6 +86,7 @@ def main():
             if index < timed_count:
                 build = run(["cargo", "test", "--workspace", "--no-run"], repo, check=False)
                 row["build_ok"] = build.returncode == 0
+                cargo_test(["--workspace"], repo)  # warm-up, untimed
                 row["full_run"] = cargo_test(["--workspace"], repo)
                 if data["selected"]:
                     row["selected_run"] = cargo_test(data["cargo_args"], repo)

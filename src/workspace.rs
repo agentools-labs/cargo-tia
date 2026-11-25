@@ -35,9 +35,10 @@ pub struct Workspace {
     /// Directories that hold a target of a member outside that member's directory, with the
     /// member's name.
     pub cross_targets: Vec<(String, String)>,
-    /// Files with a `[patch]` or `[replace]` table. A patch can redirect a registry package that
-    /// other registry packages use to a member, and no-deps metadata does not show those edges.
-    pub patch_files: Vec<PathBuf>,
+    /// Members that a `[patch]` or `[replace]` entry points to. Registry packages can then
+    /// depend on them, and no-deps metadata does not show those edges. A patch path that is
+    /// not a member counts as every member, because that package can depend on any member.
+    pub patched: Vec<usize>,
     /// `full-run` globs from `[workspace.metadata.tia]`.
     pub full_run: Vec<String>,
     /// `ignore` globs from `[workspace.metadata.tia]`.
@@ -71,43 +72,95 @@ pub fn load(cargo: &OsStr, manifest_path: Option<&Path>) -> Result<Workspace, St
     let metadata: Value = serde_json::from_slice(&output.stdout)
         .map_err(|error| format!("cannot parse `cargo metadata` output: {error}"))?;
     let mut workspace = from_metadata(&metadata)?;
-    workspace.patch_files = patch_files(&workspace.root);
+    workspace.patched = patched_members(&workspace);
     Ok(workspace)
 }
 
-/// The workspace manifest and the Cargo configuration files that Cargo reads for this
-/// workspace, when they hold a `[patch]` or `[replace]` table.
-fn patch_files(root: &Path) -> Vec<PathBuf> {
-    let mut candidates = vec![root.join("Cargo.toml")];
+/// The members that patch entries point to, from the workspace manifest and the Cargo
+/// configuration files that Cargo reads for this workspace.
+fn patched_members(workspace: &Workspace) -> Vec<usize> {
+    let root = &workspace.root;
+    // Each file with the directory that its relative paths start from.
+    let mut files = vec![(root.join("Cargo.toml"), root.clone())];
     for dir in root.ancestors() {
-        candidates.push(dir.join(".cargo/config.toml"));
-        candidates.push(dir.join(".cargo/config"));
+        for name in [".cargo/config.toml", ".cargo/config"] {
+            files.push((dir.join(name), dir.to_path_buf()));
+        }
     }
     let cargo_home = std::env::var_os("CARGO_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")));
     if let Some(home) = cargo_home {
-        candidates.push(home.join("config.toml"));
-        candidates.push(home.join("config"));
+        let base = home.parent().unwrap_or(&home).to_path_buf();
+        for name in ["config.toml", "config"] {
+            files.push((home.join(name), base.clone()));
+        }
     }
-    candidates.sort();
-    candidates.dedup();
-    candidates
-        .into_iter()
-        .filter(|path| std::fs::read_to_string(path).is_ok_and(|text| has_patch_table(&text)))
-        .collect()
+    let mut patched = Vec::new();
+    for (file, base) in files {
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        for path in patch_paths(&text) {
+            let dir = relative(root, &normalize(&base.join(path)));
+            match workspace.packages.iter().position(|p| p.dir == dir) {
+                Some(index) => patched.push(index),
+                None => return (0..workspace.packages.len()).collect(),
+            }
+        }
+    }
+    patched.sort_unstable();
+    patched.dedup();
+    patched
 }
 
-/// Finds `[patch...]`, `[replace]` and dotted `patch.` keys at the start of a line. Text
-/// matching can only report too many patches, which selects more packages.
-fn has_patch_table(text: &str) -> bool {
-    text.lines().map(str::trim_start).any(|line| {
-        let line = line.trim_start_matches('[').trim_start();
-        ["patch", "replace"].iter().any(|key| {
-            line.strip_prefix(key)
+/// The `path` values of entries in `[patch...]` and `[replace]` tables and dotted `patch.` keys.
+/// This reads TOML as text: it skips comments, and an unusual layout can only add paths.
+fn patch_paths(text: &str) -> Vec<String> {
+    let mut in_table = false;
+    let mut paths = Vec::new();
+    for line in text.lines() {
+        let line = line.split(" #").next().unwrap_or_default().trim();
+        if line.starts_with('#') {
+            continue;
+        }
+        let key = line.trim_start_matches('[').trim_start();
+        let is_patch = ["patch", "replace"].iter().any(|name| {
+            key.strip_prefix(name)
                 .is_some_and(|rest| rest.trim_start().starts_with(['.', ']', '=']))
-        })
-    })
+        });
+        if line.starts_with('[') {
+            in_table = is_patch;
+        } else if in_table || is_patch {
+            paths.extend(path_values(line));
+        }
+    }
+    paths
+}
+
+/// The quoted values of `path = ...` keys in one line of TOML.
+fn path_values(line: &str) -> Vec<String> {
+    let mut values = Vec::new();
+    let mut rest = line;
+    while let Some(at) = rest.find("path") {
+        let whole_key = !rest[..at]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '-');
+        rest = &rest[at + 4..];
+        let Some(value) = rest.trim_start().strip_prefix('=').map(str::trim_start) else {
+            continue;
+        };
+        let Some(quote) = value.chars().next().filter(|c| *c == '"' || *c == '\'') else {
+            continue;
+        };
+        if let Some(end) = value[1..].find(quote) {
+            if whole_key {
+                values.push(value[1..1 + end].to_string());
+            }
+        }
+    }
+    values
 }
 
 /// Builds the workspace model from `cargo metadata` JSON.
@@ -379,19 +432,28 @@ mod tests {
     }
 
     #[test]
-    fn finds_patch_tables() {
-        assert!(has_patch_table(
-            "[patch.crates-io]\nfoo = { path = \"foo\" }"
-        ));
-        assert!(has_patch_table("  [ patch.\"https://github.com/x/y\" ]"));
-        assert!(has_patch_table(
-            "[replace]\n\"foo:0.1.0\" = { path = \"foo\" }"
-        ));
-        assert!(has_patch_table("patch.crates-io.foo.path = \"foo\""));
-        assert!(!has_patch_table(
-            "[package]\nname = \"patchwork\"\n# [patch.crates-io]"
-        ));
-        assert!(!has_patch_table("[dependencies]\npatchwork = \"1\""));
+    fn reads_patch_paths() {
+        let paths = |text: &str| patch_paths(text);
+        assert_eq!(
+            paths("[patch.crates-io]\nfoo = { path = \"x\" } # local"),
+            ["x"]
+        );
+        assert_eq!(
+            paths("[ patch.'crates-io'.foo ]\npath = 'y'\nversion = \"1\""),
+            ["y"]
+        );
+        assert_eq!(paths("patch.crates-io.foo.path = \"z\""), ["z"]);
+        assert_eq!(paths("[replace]\n\"foo:0.1.0\" = { path = \"w\" }"), ["w"]);
+        // Commented entries, other tables, git sources and other keys hold no patch path.
+        assert!(paths("[patch.'crates-io']\n# rowan = { path = \"../rowan\" }\n").is_empty());
+        assert!(paths("[dependencies]\nfoo = { path = \"a\" }").is_empty());
+        assert!(paths("[patch.crates-io]\nfoo = { git = \"https://example.com/foo\" }").is_empty());
+        assert!(paths("[patch.crates-io]\nfoo = { filepath = \"q\" }").is_empty());
+        assert!(
+            paths("[patch.crates-io]\na = { path = \"x\" }\n[dependencies]\nb = { path = \"y\" }")
+                == ["x"]
+        );
+        assert!(paths("[package]\nname = \"patchwork\"").is_empty());
     }
 
     #[test]

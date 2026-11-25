@@ -948,6 +948,28 @@ fn a_patch_makes_registry_users_depend_on_every_member() {
     repo.append("crates/core/src/lib.rs", "pub fn g() {}\n");
     let json = repo.select("HEAD", &[]);
     assert!(selected(&json).contains(&"lonely".to_string()), "{json:#}");
+    // No patch points to `mid`, so its change does not reach `lonely`.
+    repo.git(&["checkout", "-q", "--", "."]);
+    repo.append("crates/mid/src/lib.rs", "pub fn g() {}\n");
+    assert_eq!(selected(&repo.select("HEAD", &[])), ["app", "mid"]);
+}
+
+#[test]
+fn commented_patches_change_nothing() {
+    let repo = chain();
+    repo.append(
+        "Cargo.toml",
+        "\n[patch.crates-io]\n# core = { path = \"crates/core\" }\n",
+    );
+    let manifest = fs::read_to_string(repo.path("crates/lonely/Cargo.toml")).unwrap();
+    repo.write(
+        "crates/lonely/Cargo.toml",
+        &manifest.replace("[dependencies]\n", "[dependencies]\nwrapper = \"1\"\n"),
+    );
+    repo.commit("commented patch");
+    repo.append("crates/core/src/lib.rs", "pub fn g() {}\n");
+    let json = repo.select("HEAD", &[]);
+    assert!(!selected(&json).contains(&"lonely".to_string()), "{json:#}");
 }
 
 #[test]

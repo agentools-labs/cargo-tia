@@ -87,8 +87,10 @@ rejects `-p`, `--package`, `--workspace`, `--exclude` and `--manifest-path` ther
    members. Normal, dev, build, optional and target-specific dependencies all count. Cargo does not
    report every edge, so two kinds of members count as dependents of every member:
    - a member that uses a path dependency that is not a member;
-   - when the workspace manifest or a Cargo configuration file has a `[patch]` or `[replace]` table,
-     a member with registry or git dependencies, because those can depend on a patched member.
+   - a member with registry or git dependencies, when a `[patch]` or `[replace]` entry in the
+     workspace manifest or a Cargo configuration file points to a member: those dependencies can
+     depend on the patched member. This counts for the patched members only. A patch path that is
+     not a member counts for every member.
 
 These changes select the full workspace:
 
