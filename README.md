@@ -63,7 +63,8 @@ ambiguous when a dependency has the same name and version as a member, which hap
 
 With an empty selection, `test` and `nextest` run nothing and exit 0. For a partial selection,
 `nextest` (0.9.75 or newer) adds `--no-tests=pass`, because the selected packages can hold no tests while the workspace
-has them; pass your own `--no-tests` after `--` to change that. With `--no-run` it adds nothing. `args` prints an empty line, so
+has them. It adds nothing when you pass your own `--no-tests` after `--`, when `NEXTEST_NO_TESTS` is
+set, or with `--no-run`. `args` prints an empty line, so
 `cargo test $(cargo tia args)` then runs a plain `cargo test`, which tests what Cargo selects by default
 in the current directory. Use `cargo tia test` when you want to skip
 the run. `args` separates arguments with spaces, so for a manifest path that holds spaces, read the

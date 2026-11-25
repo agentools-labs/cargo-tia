@@ -207,10 +207,13 @@ pub fn changed_files(
                 && (!sparse || std::fs::symlink_metadata(toplevel.join(path)).is_ok());
             let hidden = assume_unchanged || skip_worktree;
             // A hidden link or submodule can change its target without git seeing it. A link
-            // that still points where the index says is unchanged.
-            let link_now = std::fs::symlink_metadata(toplevel.join(path))
-                .is_ok_and(|metadata| metadata.is_symlink());
-            let same_link = mode == "120000"
+            // that still points where the index says is unchanged. Only hidden entries need
+            // the comparison, which starts a git process.
+            let link_now = hidden
+                && std::fs::symlink_metadata(toplevel.join(path))
+                    .is_ok_and(|metadata| metadata.is_symlink());
+            let same_link = hidden
+                && mode == "120000"
                 && link_now
                 && std::fs::read_link(toplevel.join(path)).is_ok_and(|target| {
                     git(toplevel.as_path(), &["cat-file", "blob", object])

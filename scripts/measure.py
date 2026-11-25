@@ -36,45 +36,56 @@ def run(args, cwd, check=True):
     return result
 
 
-def failing_packages(stderr):
-    # Only Cargo's final summary counts: a test can run a nested Cargo whose output names
-    # other packages earlier. With one failing target the summary is the last "error: test
-    # failed, to rerun pass" line; with more, the "error: N targets failed:" line and the
-    # indented hints after it.
+def summary_hints(stderr):
+    """The rerun hints of Cargo's final summary, such as "-p foo --lib".
+
+    With one failing target the summary can be the last "error: test failed, to rerun pass"
+    line; otherwise it is the "error: N targets failed:" line and the indented hints after it.
+    Only the summary counts: a test can run a nested Cargo whose output comes earlier.
+    """
     lines = stderr.splitlines()
-    summary = ""
     for index in range(len(lines) - 1, -1, -1):
         line = lines[index]
-        if line.startswith("error: test failed, to rerun pass"):
-            summary = line
-            break
+        single = re.match(r"error: test failed, to rerun pass `([^`]+)`", line)
+        if single:
+            return [single.group(1)]
         if re.match(r"error: \d+ targets? failed:", line):
             hints = []
             for hint in lines[index + 1:]:
-                if not hint.startswith(" "):
+                found = re.match(r"\s+`([^`]+)`", hint)
+                if not found:
                     break
-                hints.append(hint)
-            summary = "\n".join(hints)
-            break
-    named = set(re.findall(r"`-p (\S+?)(?:@\S+)? ", summary))
+                hints.append(found.group(1))
+            return hints
+    return []
+
+
+def failing_packages(stderr):
+    hints = summary_hints(stderr)
+    named = set()
+    for hint in hints:
+        found = re.match(r"-p (\S+?)(?:@\S+)?(?: |$)", hint)
+        if found:
+            named.add(found.group(1))
     # In a workspace with one package, Cargo's hints name no package: "*" stands for it.
-    if not named and re.search(r"`--", summary):
+    if hints and not named:
         named.add("*")
     return sorted(named)
+
+
+def not_started(stderr):
+    # Cargo reports a test binary that never started (a missing runner, say) as the cause of
+    # that target's "test failed" error. Only the targets of the final summary count.
+    hints = set(summary_hints(stderr))
+    causes = re.findall(
+        r"^error: test failed, to rerun pass `([^`]+)`\n\nCaused by:\n  could not execute process ",
+        stderr, re.M)
+    return any(hint in hints for hint in causes)
 
 
 def compile_failures(stderr, workspace):
     # Only workspace packages: a test can build a fixture that is meant to fail.
     return sorted(set(re.findall(r"could not compile `([^`]+)`", stderr)) & workspace)
-
-
-def not_started(stderr):
-    # Only test binaries in the measured target directory: a test can run other processes.
-    target = os.path.realpath(os.environ["CARGO_TARGET_DIR"]) + os.sep
-    return any(
-        os.path.realpath(path).startswith(target)
-        for path in re.findall(r"could not execute process `([^`\s]+)", stderr)
-    )
 
 
 def workspace_names(repo):
