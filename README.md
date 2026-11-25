@@ -108,8 +108,8 @@ Arguments after `--` go to the test command. They must not change the packages: 
      registry or git dependencies.
 
    The tool reads patches and overrides as text from the workspace manifest, from the Cargo
-   configuration files in the workspace root, the current directory, their parents and `CARGO_HOME`,
-   and from the files that those configuration files include.
+   configuration files in the current directory, its parents and `CARGO_HOME` (as Cargo does), and
+   from the files that those configuration files include.
 
 These changes select the full workspace:
 
