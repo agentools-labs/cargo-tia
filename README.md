@@ -63,7 +63,7 @@ ambiguous when a dependency has the same name and version as a member, which hap
 
 With an empty selection, `test` and `nextest` run nothing and exit 0. For a partial selection,
 `nextest` (0.9.75 or newer) adds `--no-tests=pass`, because the selected packages can hold no tests while the workspace
-has them; pass your own `--no-tests` after `--` to change that. `args` prints an empty line, so
+has them; pass your own `--no-tests` after `--` to change that. With `--no-run` it adds nothing. `args` prints an empty line, so
 `cargo test $(cargo tia args)` then runs a plain `cargo test`, which tests what Cargo selects by default
 in the current directory. Use `cargo tia test` when you want to skip
 the run. `args` separates arguments with spaces, so for a manifest path that holds spaces, read the
@@ -75,7 +75,7 @@ Arguments after `--` go to the test command. They must not change the packages: 
 `--binaries-metadata` and `--cargo-metadata`, which conflict with `--workspace`, and the recorded
 rerun options `-R`, `--rerun` and `--run-id`, which have their own scope. A configuration option there (Cargo's `--config`, nextest's `--config-file` or
 `--tool-config-file`) can change every package, so it selects the full workspace. Cargo's `--config`
-values also go to `cargo metadata`, because Cargo can need them to read the manifests. A custom target
+and `-Z` values also go to `cargo metadata`, because Cargo can need them to read the manifests. A custom target
 specification file (`--target spec.json`) there counts as a full-run file. For a partial selection
 that is not empty, so do `--features`
 (`-F`, also in a group), `--test`, `--bin`, `--example` or `--bench` with a target name or glob that no
@@ -90,7 +90,9 @@ those against the selected packages.
    untracked files. For files marked assume-unchanged or skip-worktree, the file in the working tree
    decides, not the index. Without a sparse checkout, a missing skip-worktree file counts as deleted. Git configuration
    such as `diff.ignoreSubmodules`, `core.fsmonitor`, `core.fileMode`, `core.ignoreCase`,
-   `core.trustctime` or `core.checkStat` cannot hide a change. With `--committed`, the list includes only
+   `core.trustctime` or `core.checkStat` cannot hide a change. Repository variables that a Git hook
+   exports, such as `GIT_DIR` and `GIT_INDEX_FILE`, are cleared: the tool finds the repository from
+   the workspace. With `--committed`, the list includes only
    committed changes, and the working tree must match `HEAD`.
 3. It reads the workspace with `cargo metadata --no-deps --offline`.
 4. It gives each changed file one effect, in this order:

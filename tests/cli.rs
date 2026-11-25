@@ -158,6 +158,27 @@ fn isolated(mut command: Command) -> Command {
         // The tool reads these: the caller's environment must not change the results.
         .env_remove("NEXTEST_NO_TESTS")
         .env_remove("RUST_TARGET_PATH");
+    // A Git hook exports repository-local variables, such as GIT_INDEX_FILE: fixture commands
+    // would write to that repository.
+    for var in [
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_CONFIG",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_COUNT",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_IMPLICIT_WORK_TREE",
+        "GIT_GRAFT_FILE",
+        "GIT_INDEX_FILE",
+        "GIT_NO_REPLACE_OBJECTS",
+        "GIT_REPLACE_REF_BASE",
+        "GIT_PREFIX",
+        "GIT_SHALLOW_FILE",
+        "GIT_COMMON_DIR",
+    ] {
+        command.env_remove(var);
+    }
     command
 }
 
@@ -881,6 +902,27 @@ fn a_hidden_file_restored_to_the_base_is_no_change() {
     // The same file with other content is a change.
     repo.append("crates/lonely/src/lib.rs", "// edited\n");
     assert_eq!(selected(&repo.select("HEAD^", &[])), ["lonely"]);
+}
+
+#[test]
+fn repository_variables_of_a_git_hook_do_not_redirect_the_tool() {
+    let other = Repo::new("hook-repository");
+    other.write("a.txt", "1\n");
+    other.commit("a");
+    let repo = chain();
+    repo.append("crates/lonely/src/lib.rs", "// changed\n");
+    // As a hook of the other repository exports them.
+    let output = isolated(Command::new(BIN))
+        .current_dir(&repo.dir)
+        .env("GIT_DIR", other.path(".git"))
+        .env("GIT_WORK_TREE", &other.dir)
+        .env("GIT_INDEX_FILE", other.path(".git/index"))
+        .args(["tia", "list", "--json", "--base", "HEAD"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(selected(&json), ["lonely"], "{json:#}");
 }
 
 #[test]
@@ -3325,10 +3367,16 @@ fn nextest_keeps_its_no_tests_policy_for_a_whole_workspace() {
         &["tia", "nextest", "--base", "HEAD"],
         Some(("NEXTEST_NO_TESTS", "fail")),
     );
+    // A partial selection that only builds: nextest rejects a policy with --no-run.
+    run(
+        &["tia", "nextest", "--base", "HEAD", "--", "--no-run"],
+        None,
+    );
     let calls = fs::read_to_string(repo.path("cargo-calls.log")).unwrap();
     let lines: Vec<&str> = calls.lines().collect();
     assert!(!lines[0].contains("--no-tests"), "{}", lines[0]);
     assert!(!lines[1].contains("--no-tests"), "{}", lines[1]);
+    assert!(!lines[2].contains("--no-tests"), "{}", lines[2]);
 }
 
 #[cfg(unix)]

@@ -69,7 +69,7 @@ pub struct Workspace {
 }
 
 /// Runs `cargo metadata --no-deps --offline` and builds the workspace model.
-/// `configs` are Cargo `--config` arguments for `cargo metadata`.
+/// `configs` are Cargo `--config` and `-Z` arguments for `cargo metadata`.
 pub fn load(
     cargo: &OsStr,
     manifest_path: Option<&Path>,

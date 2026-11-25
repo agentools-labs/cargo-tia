@@ -3,6 +3,50 @@
 use crate::workspace::{normalize, relative};
 use std::path::Path;
 use std::process::Command;
+use std::sync::OnceLock;
+
+/// Git's repository-local environment variables, as `git rev-parse --local-env-vars` printed
+/// them in Git 2.54.
+const LOCAL_ENV_VARS: &[&str] = &[
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_GRAFT_FILE",
+    "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_PREFIX",
+    "GIT_SHALLOW_FILE",
+    "GIT_COMMON_DIR",
+];
+
+/// The repository-local variables to clear, such as GIT_DIR and GIT_INDEX_FILE: the list
+/// above and the one the installed Git prints. A Git hook exports them for its own
+/// repository, and they would send every command, the ones for submodules too, there. Git
+/// clears them itself before it enters a submodule.
+fn local_env_vars() -> &'static [String] {
+    static VARS: OnceLock<Vec<String>> = OnceLock::new();
+    VARS.get_or_init(|| {
+        let mut vars: Vec<String> = LOCAL_ENV_VARS.iter().map(|var| var.to_string()).collect();
+        let mut command = Command::new("git");
+        command.args(["rev-parse", "--local-env-vars"]);
+        for var in LOCAL_ENV_VARS {
+            command.env_remove(var);
+        }
+        if let Ok(output) = command.output() {
+            let printed = String::from_utf8_lossy(&output.stdout);
+            vars.extend(printed.split_whitespace().map(str::to_string));
+        }
+        vars.sort();
+        vars.dedup();
+        vars
+    })
+}
 
 /// The files that differ from the merge base, relative to the workspace root.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -440,7 +484,11 @@ fn default_base(toplevel: &Path) -> Option<String> {
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let output = Command::new("git")
+    let mut command = Command::new("git");
+    for var in local_env_vars() {
+        command.env_remove(var);
+    }
+    let output = command
         .arg("-C")
         .arg(dir)
         // A file system monitor hook can run any program and can report stale results.

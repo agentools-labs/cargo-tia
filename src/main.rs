@@ -384,21 +384,25 @@ fn config_override(options: &Options) -> bool {
         })
 }
 
-/// Cargo's `--config` arguments after `--`. Cargo can need them to read the manifests, for
-/// example for a registry that only they define, so `cargo metadata` gets them too.
-fn cargo_configs(options: &Options) -> Vec<OsString> {
-    let mut configs = Vec::new();
+/// Cargo's `--config` and `-Z` arguments after `--`. Cargo can need them to read the
+/// manifests, for example for a registry that only they define or for an unstable manifest
+/// feature (`-Z bindeps`), so `cargo metadata` gets them too.
+fn metadata_args(options: &Options) -> Vec<OsString> {
+    let mut forwarded = Vec::new();
     let mut args = options.passthrough.iter().take_while(|arg| *arg != "--");
     while let Some(arg) = args.next() {
-        if arg == "--config" {
+        if arg == "--config" || arg == "-Z" {
             if let Some(value) = args.next() {
-                configs.extend([arg.clone(), value.clone()]);
+                forwarded.extend([arg.clone(), value.clone()]);
             }
-        } else if arg.to_string_lossy().starts_with("--config=") {
-            configs.push(arg.clone());
+        } else {
+            let text = arg.to_string_lossy();
+            if text.starts_with("--config=") || text.starts_with("-Z") {
+                forwarded.push(arg.clone());
+            }
         }
     }
-    configs
+    forwarded
 }
 
 fn main() -> ExitCode {
@@ -419,7 +423,7 @@ fn main() -> ExitCode {
     let workspace = match workspace::load(
         &cargo,
         options.manifest_path.as_deref(),
-        &cargo_configs(&options),
+        &metadata_args(&options),
     ) {
         Ok(workspace) => workspace,
         Err(error) => {
@@ -523,11 +527,16 @@ fn main() -> ExitCode {
             };
             let mut arguments = cargo_args(&workspace, &selection, &options);
             // Nextest fails when a run has no tests. A partial selection can hold no tests while
-            // the workspace has them, so accept that unless the caller chose a policy.
+            // the workspace has them, so accept that unless the caller chose a policy. With
+            // `--no-run` nothing runs, and nextest rejects a policy.
             let policy = options
                 .passthrough
                 .iter()
-                .any(|arg| arg.to_string_lossy().starts_with("--no-tests"));
+                .take_while(|arg| *arg != "--")
+                .any(|arg| {
+                    let arg = arg.to_string_lossy();
+                    arg.starts_with("--no-tests") || arg == "--no-run"
+                });
             let partial = selection.packages.len() < workspace.packages.len();
             let policy = policy || std::env::var_os("NEXTEST_NO_TESTS").is_some();
             if options.mode == Mode::Nextest && partial && !policy {
@@ -841,6 +850,42 @@ mod tests {
                 "{args:?}"
             );
         }
+    }
+
+    #[test]
+    fn metadata_gets_configuration_and_unstable_flags() {
+        let args = [
+            "test",
+            "--",
+            "--release",
+            "--config",
+            "a.toml",
+            "--config=b=1",
+            "-Z",
+            "bindeps",
+            "-Zgc",
+            "--",
+            "--config",
+            "c.toml",
+        ];
+        let Ok(Parsed::Run(options)) = parse(args.iter().map(OsString::from).collect()) else {
+            panic!("parse failed");
+        };
+        let forwarded: Vec<String> = metadata_args(&options)
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            forwarded,
+            [
+                "--config",
+                "a.toml",
+                "--config=b=1",
+                "-Z",
+                "bindeps",
+                "-Zgc"
+            ]
+        );
     }
 
     #[test]
