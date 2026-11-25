@@ -270,6 +270,7 @@ pub fn changed_files(
             .cloned()
             .collect();
         paths.retain(|path| !restored.contains(path));
+        special.retain(|path| !restored.contains(path));
         paths.extend(
             new_files
                 .into_iter()

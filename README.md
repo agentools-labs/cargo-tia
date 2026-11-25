@@ -4,8 +4,9 @@ Test impact analysis for Cargo workspaces. `cargo tia` finds the workspace packa
 affect and tests only those packages. When it cannot be sure, it tests the full workspace.
 
 It is a single binary with one dependency (`serde_json`). It reads the local git repository and
-`cargo metadata`, and does not write to the repository (git runs without optional locks, so it does not
-refresh the index). It makes no network calls and sends no telemetry. (`cargo tia test` then runs a
+`cargo metadata`. It does not change files or commits. Like `git status`, git can refresh the stat data
+in `.git/index` while it compares the working tree; the tool asks it not to (`GIT_OPTIONAL_LOCKS=0`),
+which newer git honors. It makes no network calls and sends no telemetry. (`cargo tia test` then runs a
 normal `cargo test`, which can download dependencies like any Cargo build.)
 
 ## Install

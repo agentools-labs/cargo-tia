@@ -3117,7 +3117,15 @@ fn a_link_removed_from_the_index_still_reaches_its_target() {
     repo.git(&["rm", "-q", "--cached", "crates/lonely/src/shared.rs"]);
     repo.append("crates/core/src/lib.rs", "// changed\n");
     let json = repo.select("HEAD", &[]);
+    assert!(!is_full(&json), "{json:#}");
     assert!(selected(&json).contains(&"lonely".to_string()), "{json:#}");
+    let link = json["changed_files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|file| file["path"] == "crates/lonely/src/shared.rs")
+        .unwrap();
+    assert_eq!(link["link_to"], "crates/core/src/lib.rs");
 }
 
 #[test]
