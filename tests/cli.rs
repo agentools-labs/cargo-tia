@@ -2673,6 +2673,20 @@ fn library_arguments_need_a_selected_library() {
     assert_eq!(calls, "test --workspace --lib\n");
 }
 
+#[test]
+fn a_file_restored_after_a_deleting_commit_selects_nothing() {
+    let repo = chain();
+    repo.write("crates/lonely/src/data.rs", "// data\n");
+    repo.commit("data");
+    let base = repo.git(&["rev-parse", "HEAD"]);
+    repo.git(&["rm", "-q", "crates/lonely/src/data.rs"]);
+    repo.commit("delete data");
+    // Restored in the working tree only: untracked, but the same as at the base.
+    repo.write("crates/lonely/src/data.rs", "// data\n");
+    let json = repo.select(base.trim(), &[]);
+    assert!(selected(&json).is_empty(), "{json:#}");
+}
+
 /// A small deterministic generator, so the property test needs no extra crate.
 struct Rng(u64);
 

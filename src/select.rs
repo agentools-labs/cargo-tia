@@ -97,11 +97,14 @@ pub struct Rules {
 
 /// Decides what one changed file does. `path` is relative to the workspace root.
 pub fn classify(workspace: &Workspace, rules: &Rules, path: &str) -> Effect {
-    let full_run = FULL_RUN
-        .iter()
-        .copied()
-        .chain(workspace.full_run.iter().map(String::as_str))
-        .chain(rules.full_run.iter().map(String::as_str));
+    // The built-in files match in any case: a case-insensitive file system reads them so.
+    let lower = path.to_lowercase();
+    for pattern in FULL_RUN {
+        if glob::matches(&pattern.to_lowercase(), &lower) {
+            return Effect::FullRun(format!("matches full-run glob `{pattern}`"));
+        }
+    }
+    let full_run = workspace.full_run.iter().chain(&rules.full_run);
     for pattern in full_run {
         if glob::matches(pattern, path) {
             return Effect::FullRun(format!("matches full-run glob `{pattern}`"));
@@ -415,6 +418,7 @@ mod tests {
             "crates/app/build.rs",
             "crates/core/gen.rs",
             "crates/core/Gen.rs",
+            "crates/app/Rust-Toolchain.toml",
             "ci/run.sh",
         ] {
             let selection = select(&ws, &Rules::default(), &files(&[path]), &[], &[]);

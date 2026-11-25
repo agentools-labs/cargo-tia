@@ -232,7 +232,19 @@ pub fn changed_files(
                 special.push(path.trim_end_matches('/').to_string());
             }
         }
-        paths.extend(new_files);
+        // A file that a commit deleted and the working tree restores, untracked: a change
+        // only when it differs from the base.
+        let restored: Vec<String> = new_files
+            .iter()
+            .filter(|path| paths.contains(path) && !differs(&toplevel, &merge_base, path))
+            .cloned()
+            .collect();
+        paths.retain(|path| !restored.contains(path));
+        paths.extend(
+            new_files
+                .into_iter()
+                .filter(|path| !restored.contains(path)),
+        );
         paths.extend(
             hidden
                 .into_iter()

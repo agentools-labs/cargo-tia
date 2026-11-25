@@ -73,6 +73,8 @@ def main():
     target_dir = os.environ.get("CARGO_TARGET_DIR", "")
     if not target_dir or os.path.abspath(target_dir).startswith(repo + os.sep):
         raise SystemExit("set CARGO_TARGET_DIR to a directory outside the measured clone")
+    # Cargo runs inside the clone: a relative path would point into it.
+    os.environ["CARGO_TARGET_DIR"] = os.path.abspath(target_dir)
     select_count, timed_count = int(select_count), int(timed_count)
     if run(["git", "status", "--porcelain"], repo).stdout.strip():
         raise SystemExit(f"{repo} has uncommitted changes; use a clean clone")

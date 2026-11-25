@@ -175,15 +175,15 @@ impl Workspace {
             .iter()
             .enumerate()
             .filter(|(_, package)| contains(&package.dir, path))
-            .max_by_key(|(_, package)| package.dir.len());
+            .max_by_key(|(_, package)| depth(&package.dir));
         let foreign = self
             .foreign
             .iter()
             .enumerate()
             .filter(|(_, (dir, _))| contains(dir, path))
-            .max_by_key(|(_, (dir, _))| dir.len());
+            .max_by_key(|(_, (dir, _))| depth(dir));
         if let Some((index, (dir, _))) = foreign {
-            if member.is_none_or(|(_, package)| dir.len() > package.dir.len()) {
+            if member.is_none_or(|(_, package)| depth(dir) > depth(&package.dir)) {
                 return Some(Owner::PathDependency(index));
             }
         }
@@ -700,6 +700,14 @@ fn string_list(config: &Value, key: &str) -> Result<Vec<String>, String> {
     }
 }
 
+/// How deep a directory lies below the workspace root: negative above it.
+pub fn depth(dir: &str) -> i64 {
+    dir.split('/')
+        .filter(|part| !part.is_empty())
+        .map(|part| if part == ".." { -1 } else { 1 })
+        .sum()
+}
+
 /// True when `path` lies in the directory `dir`; both are relative to the workspace root, and
 /// the empty `dir` is the root itself.
 pub fn contains(dir: &str, path: &str) -> bool {
@@ -794,6 +802,24 @@ mod tests {
 
     fn target(kind: &str, src: &str) -> Value {
         json!({"kind": [kind], "src_path": src})
+    }
+
+    #[test]
+    fn a_path_dependency_above_the_root_does_not_own_member_files() {
+        let ws = Workspace {
+            packages: vec![Package {
+                name: "ui".to_string(),
+                dir: "ui".to_string(),
+                deps: Vec::new(),
+                external: false,
+            }],
+            foreign: vec![("../..".to_string(), vec![0])],
+            ..Workspace::default()
+        };
+        assert_eq!(ws.owner("ui/fixtures/case.json"), Some(Owner::Member(0)));
+        assert_eq!(ws.owner("../other/x"), Some(Owner::PathDependency(0)));
+        assert_eq!(depth("../.."), -2);
+        assert_eq!(depth("ui/fixtures"), 2);
     }
 
     #[test]
