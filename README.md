@@ -96,8 +96,9 @@ Arguments after `--` go to the test command. They must not change the packages: 
    every file, so any change changes the package that holds it.
 5. It selects the changed packages and every member that depends on them, directly or through other
    members. Normal, dev, build, optional and target-specific dependencies all count. A member inside
-   the source directory of another package's target (also a build script, except one of the root
-   package) counts as its dependency, because that target can compile the member's files as modules. Cargo does not
+   the source directory of another package's target, build scripts included, counts as its
+   dependency, because that target can compile the member's files as modules. So a build script in
+   the workspace root makes its package depend on every member. Cargo does not
    report every edge, so the tool adds these:
    - A member that uses a path dependency that is not a member depends on every member.
    - When a `[patch]` or `[replace]` entry points to a member, every member with registry or git
@@ -119,7 +120,8 @@ These changes select the full workspace:
   scripts of path dependencies that are not members.
 - A changed symbolic link or submodule, or an untracked nested repository. Its effect on other paths
   is unknown.
-- A Cargo configuration file that another configuration file includes.
+- A Cargo configuration file that the tool reads, also behind a symbolic link or in a `CARGO_HOME`
+  inside the repository, and the files that it includes.
 - A file in a source replacement directory (`directory` or `local-registry` in Cargo configuration).
   Any member can use the registry packages there.
 - A file in a directory that holds a target of another package, for example
@@ -133,8 +135,9 @@ These changes select the full workspace:
   (for example in a shallow clone),
   more than one merge base (criss-cross merges), an unknown base, no `origin/HEAD` and no `--base`, or no
   repository.
-- A path dependency, local patch, `paths` override, included configuration file, target, build
-  script, file that a non-member manifest names, or symbolic link target outside the git repository, also through a path dependency
+- A path dependency, local patch, `paths` override, target, build script, file that a non-member
+  manifest names, symbolic link target, or file that a configuration file in the repository includes,
+  outside the git repository, also through a path dependency
   of a path dependency. Git cannot see changes there.
 - A non-member path dependency that inherits dependencies from a workspace manifest that the tool
   cannot find.
