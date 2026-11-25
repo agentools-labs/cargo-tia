@@ -237,7 +237,7 @@ that failed in the full run was in the selection:
 |---|---|---|---|
 | Revert the fix in `crates/printer/src/standard.rs` | 3 of 10 | ripgrep | none |
 | Revert `crates/core/flags/{defs,hiargs}.rs` | 1 of 10 | ripgrep | none |
-| Invert `GlobSet::is_match` | 5 of 10 | globset (does not compile) | none |
+| Invert `GlobSet::is_match` | 5 of 10 | globset, grep-cli, ripgrep | none |
 | Invert the default `Matcher::is_match` | 7 of 10 | grep-pcre2, grep-printer, grep-regex, grep-searcher, ripgrep | none |
 
 ## Alternatives
