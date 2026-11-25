@@ -138,6 +138,9 @@ because a case-insensitive file system reads them so.
 - Any change while `.config/nextest.toml` defines or uses setup or wrapper scripts: a script can
   prepare the tests of any package, from inputs that the tool cannot know.
 - `.gitattributes` at any depth: it can change the checked-out bytes of every file below it.
+- A changed file with a non-ASCII name while package directories, targets or links also have
+  non-ASCII names: Git and the file system can spell such a name in two Unicode forms (composed and
+  decomposed, as HFS+ stores names), and the tool compares bytes.
 - `build.rs` at any depth, each build script that `cargo metadata` reports, and the custom build
   scripts of path dependencies that are not members.
 - A changed symbolic link or submodule, or an untracked nested repository. Its effect on other paths

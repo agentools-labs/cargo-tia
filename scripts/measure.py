@@ -76,7 +76,9 @@ def failing_packages(stderr):
 def not_started(stderr):
     # Cargo reports a test binary that never started (a missing runner or rustdoc, say) as the
     # cause of that target's "test failed" or "doctest failed" error. Only the targets of the
-    # final summary count.
+    # final summary count. A test that runs Cargo on a fixture with the same package and
+    # target names prints the same lines: the script cannot tell them apart, and then reports
+    # the commit as inconclusive, never as a run without missed failures.
     hints = set(summary_hints(stderr))
     causes = re.findall(
         r"^error: (?:doc)?test failed, to rerun pass `([^`]+)`\n\nCaused by:\n"
@@ -87,8 +89,9 @@ def not_started(stderr):
 
 def build_phase(stderr):
     # Cargo builds everything before it runs the first test binary. A test can run a nested
-    # Cargo, on a fixture that is meant to fail, say: its output comes later.
-    started = re.search(r"^\s+(?:Running|Doc-tests) ", stderr, re.M)
+    # Cargo, on a fixture that is meant to fail, say: its output comes later. A test launch
+    # names a target; a verbose compiler line ("Running `rustc ...`") quotes a command.
+    started = re.search(r"^\s+(?:Running [^`]|Doc-tests )", stderr, re.M)
     return stderr[:started.start()] if started else stderr
 
 
@@ -155,6 +158,9 @@ def main():
     os.environ["CARGO_BUILD_BUILD_DIR"] = os.path.realpath(target_dir)
     # Plain output: the script reads Cargo's messages.
     os.environ["CARGO_TERM_COLOR"] = "never"
+    # Cargo's default verbosity: the parsers read its normal messages.
+    os.environ["CARGO_TERM_VERBOSE"] = "false"
+    os.environ["CARGO_TERM_QUIET"] = "false"
     select_count, timed_count = int(select_count), int(timed_count)
     if run(["git", "status", "--porcelain", "--untracked-files=all"], top).stdout.strip():
         raise SystemExit(f"{repo} has uncommitted changes; use a clean clone")

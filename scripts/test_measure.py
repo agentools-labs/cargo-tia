@@ -80,6 +80,9 @@ class Parsers(unittest.TestCase):
         build = "error: could not compile `b` (lib) due to 1 previous error\n"
         self.assertEqual(measure.compile_failures(build), ["b"])
         self.assertEqual(measure.compile_failures(build + RUNNING + NESTED), ["b"])
+        # Verbose output: a compiler command is not a test launch.
+        verbose = "     Running `/toolchain/bin/rustc --crate-name b --edition=2021`\n" + build
+        self.assertEqual(measure.compile_failures(verbose), ["b"])
 
     def test_one_package_workspace(self):
         self.assertEqual(

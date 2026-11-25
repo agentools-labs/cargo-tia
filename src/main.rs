@@ -340,6 +340,29 @@ fn with_target_spec(workspace: &Workspace, options: &Options) -> Rules {
     rules
 }
 
+/// True when a path that the tool compares with changed files has a non-ASCII name: a package
+/// or path dependency directory, a target, a build script, a configuration file or a link.
+fn has_non_ascii_paths(workspace: &Workspace, symlinks: &[(String, String)]) -> bool {
+    let non_ascii = |path: &String| !path.is_ascii();
+    workspace
+        .packages
+        .iter()
+        .any(|package| non_ascii(&package.dir))
+        || workspace.foreign.iter().any(|(dir, _)| non_ascii(dir))
+        || workspace.targets.iter().any(|(src, _)| non_ascii(src))
+        || workspace
+            .cross_targets
+            .iter()
+            .any(|(dir, _)| non_ascii(dir))
+        || workspace.build_scripts.iter().any(non_ascii)
+        || workspace.config_files.iter().any(non_ascii)
+        || workspace.manifest_targets.iter().any(non_ascii)
+        || workspace.source_dirs.iter().any(non_ascii)
+        || symlinks
+            .iter()
+            .any(|(link, target)| non_ascii(link) || non_ascii(target))
+}
+
 /// Cargo's matching of target names: `*`, `?` and `[...]` classes (`[!...]` negates).
 fn target_matches(pattern: &str, name: &str) -> bool {
     let pattern: Vec<char> = pattern.chars().collect();
@@ -495,6 +518,18 @@ fn main() -> ExitCode {
                 {
                     let reason = format!("Cargo `paths` override `{dir}` can replace any package");
                     selection.make_full(&workspace, reason);
+                }
+                // Git and the file system can spell a non-ASCII name in two Unicode forms
+                // (composed and decomposed, as HFS+ stores names): a byte comparison could
+                // then miss an owner or a link.
+                if let Some(path) = changes.files.iter().find(|path| !path.is_ascii()) {
+                    if has_non_ascii_paths(&workspace, &changes.symlinks) {
+                        let reason = format!(
+                            "`{path}` and paths of the workspace have non-ASCII names, which \
+                             can differ in Unicode form"
+                        );
+                        selection.make_full(&workspace, reason);
+                    }
                 }
                 if workspace.nextest_scripts && !changes.files.is_empty() {
                     let reason = "`.config/nextest.toml` defines scripts, which can prepare the \

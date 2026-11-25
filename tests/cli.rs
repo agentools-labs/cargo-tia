@@ -1565,7 +1565,10 @@ fn local_patch_used_through_a_path_dependency() {
     use_vendor_crate(&repo, "lonely", "shim");
     repo.commit("patch used through shim");
     repo.append("vendor/widget/src/lib.rs", "// changed\n");
-    assert!(selected(&repo.select("HEAD", &[])).contains(&"lonely".to_string()));
+    let json = repo.select("HEAD", &[]);
+    assert!(!is_full(&json), "{json:#}");
+    assert_eq!(selected(&json), ["lonely"], "{json:#}");
+    assert_eq!(json["changed_files"][0]["effect"], "path-dependency");
 }
 
 #[test]
@@ -1927,6 +1930,33 @@ fn a_new_file_that_differs_in_case_from_a_tracked_one() {
     }
     let json = repo.select("HEAD", &["--ignore", "**/Smoke.rs"]);
     assert!(selected(&json).is_empty(), "{json:#}");
+}
+
+#[test]
+fn non_ascii_names_on_both_sides_select_the_whole_workspace() {
+    let repo = chain();
+    repo.write(
+        "Cargo.toml",
+        "[workspace]\nresolver = \"2\"\nmembers = [\"crates/*\", \"crates/app/plugins/*\"]\n",
+    );
+    repo.write(
+        "crates/app/plugins/café/Cargo.toml",
+        "[package]\nname = \"cafe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    repo.write("crates/app/plugins/café/src/lib.rs", "pub fn c() {}\n");
+    repo.commit("plugin with an accented name");
+    // Git's spelling of the name can differ in Unicode form from the file system's.
+    repo.append("crates/app/plugins/café/src/lib.rs", "// changed\n");
+    let json = repo.select("HEAD", &[]);
+    assert!(is_full(&json), "{json:#}");
+    assert!(json["full_reasons"][0]
+        .as_str()
+        .unwrap()
+        .contains("Unicode"));
+    // ASCII changes compare exactly.
+    repo.git(&["checkout", "-q", "--", "."]);
+    repo.append("crates/lonely/src/lib.rs", "// changed\n");
+    assert_eq!(selected(&repo.select("HEAD", &[])), ["lonely"]);
 }
 
 #[test]
