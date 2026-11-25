@@ -3157,6 +3157,22 @@ fn an_include_reads_a_file_that_the_directory_search_skips() {
     assert!(selected(&json).contains(&"lonely".to_string()), "{json:#}");
 }
 
+#[test]
+fn a_paths_override_selects_the_whole_workspace() {
+    let repo = chain();
+    repo.write(".cargo/config.toml", "paths = [\"overrides/widget\"]\n");
+    repo.write(
+        "overrides/widget/Cargo.toml",
+        "[package]\nname = \"widget\"\nversion = \"1.0.0\"\nedition = \"2021\"\n[lib]\npath = \"../../crates/core/src/lib.rs\"\n",
+    );
+    repo.append("Cargo.toml", "exclude = [\"overrides\"]\n");
+    repo.commit("paths override that compiles core's file");
+    repo.append("crates/core/src/lib.rs", "// changed\n");
+    let json = repo.select("HEAD", &[]);
+    assert!(is_full(&json), "{json:#}");
+    assert!(json["full_reasons"][0].as_str().unwrap().contains("paths"));
+}
+
 /// A small deterministic generator, so the property test needs no extra crate.
 struct Rng(u64);
 

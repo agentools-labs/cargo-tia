@@ -37,6 +37,9 @@ pub struct Workspace {
     /// Source replacement directories (`directory` and `local-registry` in Cargo
     /// configuration). Registry packages from there can reach any member.
     pub source_dirs: Vec<String>,
+    /// Cargo `paths` override directories. Their crates can compile any file, so with one the
+    /// selection is the full workspace.
+    pub path_overrides: Vec<String>,
     /// Cargo configuration files that the tool read, at the path Cargo uses and at the file it
     /// resolves to. A change to one selects the full workspace.
     pub config_files: Vec<String>,
@@ -96,10 +99,12 @@ pub fn load(cargo: &OsStr, manifest_path: Option<&Path>) -> Result<Workspace, St
         patched,
         others,
         sources,
+        path_overrides,
         config_files,
         includes,
     } = overrides(&workspace);
     workspace.source_dirs = sources;
+    workspace.path_overrides = path_overrides;
     workspace.config_files = config_files;
     workspace.config_includes = includes;
     // A local patch that is not a member is a path dependency of every member that has a
@@ -352,6 +357,8 @@ struct Overrides {
     others: Vec<String>,
     /// Source replacement directories.
     sources: Vec<String>,
+    /// Cargo `paths` override directories.
+    path_overrides: Vec<String>,
     /// Configuration files read, at both paths.
     config_files: Vec<String>,
     /// Included configuration files, with the file that includes each.
@@ -387,6 +394,7 @@ fn overrides(workspace: &Workspace) -> Overrides {
         }
     }
     let (mut patched, mut others, mut sources) = (Vec::new(), Vec::new(), Vec::new());
+    let mut path_overrides = Vec::new();
     let (mut config_files, mut includes) = (Vec::new(), Vec::new());
     let mut seen = std::collections::BTreeSet::new();
     let mut included_files: Vec<PathBuf> = Vec::new();
@@ -441,10 +449,10 @@ fn overrides(workspace: &Workspace) -> Overrides {
                 None => others.push(dir),
             }
         }
-        // Any crate below a `paths` override directory can replace a registry package, with
-        // its own manifest and build script: a change there selects the full workspace.
+        // Any crate below a `paths` override directory can replace a registry package and
+        // compile files from anywhere: the caller selects the full workspace.
         for path in recursive {
-            sources.push(relative(root, &normalize(&base.join(path))));
+            path_overrides.push(relative(root, &normalize(&base.join(path))));
         }
     }
     patched.sort_unstable();
@@ -461,6 +469,7 @@ fn overrides(workspace: &Workspace) -> Overrides {
         patched,
         others,
         sources,
+        path_overrides,
         config_files,
         includes,
     }

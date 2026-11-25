@@ -62,7 +62,7 @@ ambiguous when a dependency has the same name and version as a member, which hap
 (tracing is one). `--exclude` matches workspace members only.
 
 With an empty selection, `test` and `nextest` run nothing and exit 0. For a partial selection,
-`nextest` adds `--no-tests=pass`, because the selected packages can hold no tests while the workspace
+`nextest` (0.9.75 or newer) adds `--no-tests=pass`, because the selected packages can hold no tests while the workspace
 has them; pass your own `--no-tests` after `--` to change that. `args` prints an empty line, so
 `cargo test $(cargo tia args)` then tests the default members. Use `cargo tia test` when you want to skip
 the run. `args` separates arguments with spaces, so for a manifest path that holds spaces, read the
@@ -133,8 +133,10 @@ because a case-insensitive file system reads them so.
   is unknown.
 - A Cargo configuration file that the tool reads, also behind a symbolic link or in a `CARGO_HOME`
   inside the repository, and the files that it includes.
-- A file in a source replacement directory (`directory` or `local-registry` in Cargo configuration)
-  or in a Cargo `paths` override directory. Any member can use the packages there.
+- A file in a source replacement directory (`directory` or `local-registry` in Cargo configuration).
+  Any member can use the packages there.
+- Any change while a Cargo `paths` override is configured: its crates can replace registry packages
+  and compile files from anywhere.
 - A file in a directory that holds a target of another package, for example
   `[[test]] path = "../other/check.rs"`. This includes targets of the root package below a member,
   and files that a non-member path dependency compiles from another package's directory.

@@ -28,7 +28,9 @@ import time
 
 
 def run(args, cwd, check=True):
-    result = subprocess.run(args, cwd=cwd, capture_output=True, text=True)
+    # Test output can hold any bytes.
+    result = subprocess.run(args, cwd=cwd, capture_output=True, text=True,
+                            encoding="utf-8", errors="replace")
     if check and result.returncode != 0:
         raise SystemExit(f"{args} failed:\n{result.stderr}")
     return result

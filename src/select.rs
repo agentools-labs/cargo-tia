@@ -137,9 +137,7 @@ pub fn classify(workspace: &Workspace, rules: &Rules, path: &str) -> Effect {
         .iter()
         .any(|dir| crate::workspace::contains(dir, path))
     {
-        return Effect::FullRun(
-            "is in a source replacement or `paths` override directory".to_string(),
-        );
+        return Effect::FullRun("is in a source replacement directory".to_string());
     }
     if let Some((_, package)) = workspace
         .cross_targets

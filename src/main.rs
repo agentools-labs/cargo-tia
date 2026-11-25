@@ -446,6 +446,10 @@ fn main() -> ExitCode {
                         selection.make_full(&workspace, reason);
                     }
                 }
+                if let Some(dir) = workspace.path_overrides.first() {
+                    let reason = format!("Cargo `paths` override `{dir}` can replace any package");
+                    selection.make_full(&workspace, reason);
+                }
                 for dir in &workspace.unresolved {
                     let reason = format!("cannot find the workspace that `{dir}` inherits from");
                     selection.make_full(&workspace, reason);
