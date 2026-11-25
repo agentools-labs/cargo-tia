@@ -61,8 +61,13 @@ ambiguous when a dependency has the same name and version as a member, which hap
 
 With an empty selection, `test` and `nextest` run nothing and exit 0. `args` prints an empty line, so
 `cargo test $(cargo tia args)` then tests the default members. Use `cargo tia test` when you want to skip
-the run. Arguments after `--` go to the test command. They must not change the packages: the tool
-rejects `-p`, `--package`, `--workspace`, `--exclude` and `--manifest-path` there.
+the run. `args` separates arguments with spaces, so for a manifest path that holds spaces, read the
+`cargo_args` array of `cargo tia list --json` instead.
+
+Arguments after `--` go to the test command. They must not change the packages: the tool rejects
+`-p` (also in a group such as `-qp`), `--package`, `--workspace`, `--exclude` and `--manifest-path`
+there. A `--config` option there can change patches and build settings, so it selects the full
+workspace.
 
 ## How it selects
 
@@ -77,8 +82,9 @@ rejects `-p`, `--package`, `--workspace`, `--exclude` and `--manifest-path` ther
    - **Full run**: the file matches a built-in or configured full-run glob, or it is a build script.
    - **Ignored**: the file matches an ignore glob.
    - **Package**: the file is in the directory of a workspace member. The deepest member wins.
-   - **Path dependency**: the file is in a path dependency that is not a member. The members that use
-     it are changed.
+   - **Path dependency**: the file is in a path dependency that is not a member, or in a path
+     dependency of such a dependency. The tool reads those manifests as text to find them. The
+     members that use the first one are changed.
    - **Outside**: the file is in no package. This selects the full workspace.
 
    A changed file that a tracked symbolic link points to also changes the package that holds the link.
@@ -87,20 +93,22 @@ rejects `-p`, `--package`, `--workspace`, `--exclude` and `--manifest-path` ther
    members. Normal, dev, build, optional and target-specific dependencies all count. Cargo does not
    report every edge, so two kinds of members count as dependents of every member:
    - a member that uses a path dependency that is not a member;
-   - a member with registry or git dependencies, when a `[patch]` or `[replace]` entry in the
-     workspace manifest or a Cargo configuration file points to a member: those dependencies can
-     depend on the patched member. This counts for the patched members only. A patch path that is
-     not a member counts for every member.
+   - a member with registry or git dependencies, when a `[patch]` or `[replace]` entry points to a
+     member: those dependencies can depend on the patched member. This counts for the patched
+     members only. A patch path that is not a member counts for every member. The tool reads
+     patches as text from the workspace manifest and from the Cargo configuration files in the
+     workspace root, the current directory, their parents and `CARGO_HOME`.
 
 These changes select the full workspace:
 
-- `Cargo.toml` at any depth, and `Cargo.lock`. A member manifest can change the features that Cargo
+- `Cargo.toml` and `Cargo.lock` at any depth. A member manifest can change the features that Cargo
   unifies for other packages, so it counts as a workspace file.
 - `rust-toolchain`, `rust-toolchain.toml`, `.cargo/config` and `.cargo/config.toml`, at any depth.
-- `build.rs` at any depth, and each build script that `cargo metadata` reports.
+- `build.rs` at any depth, each build script that `cargo metadata` reports, and the custom build
+  scripts of path dependencies that are not members.
 - A changed symbolic link or submodule. Its effect on other paths is unknown.
-- A file in a directory that holds a target of another member, for example
-  `[[test]] path = "../other/check.rs"`.
+- A file in a directory that holds a target of another package, for example
+  `[[test]] path = "../other/check.rs"`. This includes targets of the root package below a member.
 - A file outside every package, for example a root `README.md`, `.github/` or `scripts/`. A package at
   the workspace root owns only the top-level entries that hold its targets, such as `src/` and
   `tests/`.
@@ -108,7 +116,8 @@ These changes select the full workspace:
 - Any case where git cannot give a single change set: no merge base (for example in a shallow clone),
   more than one merge base (criss-cross merges), an unknown base, no `origin/HEAD` and no `--base`, or no
   repository.
-- A path dependency outside the git repository. Git cannot see its changes.
+- A path dependency outside the git repository, also as a path dependency of a path dependency. Git
+  cannot see its changes.
 - With `--committed`: a `Cargo.toml` with uncommitted changes, or one that git hides with
   assume-unchanged or skip-worktree. The tool reads the workspace from the working tree, so the
   working tree must match `HEAD` there.
