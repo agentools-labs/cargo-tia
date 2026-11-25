@@ -84,7 +84,8 @@ def main():
     if not target_dir or inside(target_dir):
         raise SystemExit("set CARGO_TARGET_DIR to a directory outside the measured clone")
     # Cargo runs inside the clone: a relative path would point into it.
-    os.environ["CARGO_TARGET_DIR"] = os.path.abspath(target_dir)
+    # The resolved path: a link inside the clone would be cleaned away with it.
+    os.environ["CARGO_TARGET_DIR"] = os.path.realpath(target_dir)
     select_count, timed_count = int(select_count), int(timed_count)
     if run(["git", "status", "--porcelain", "--untracked-files=all"], repo).stdout.strip():
         raise SystemExit(f"{repo} has uncommitted changes; use a clean clone")
@@ -132,7 +133,7 @@ def main():
             row = {
                 "commit": commit,
                 "subject": run(["git", "log", "-1", "--format=%s", commit], repo).stdout.strip(),
-                "changed_files": len(data["changed_files"]),
+                "changed_files": sum(1 for f in data["changed_files"] if "link_to" not in f),
                 "workspace_packages": data["workspace_packages"],
                 "full": data["full"],
                 "full_reasons": data["full_reasons"],
