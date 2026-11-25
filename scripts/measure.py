@@ -74,7 +74,8 @@ def main():
         raise SystemExit("build or install cargo-tia outside the measured clone")
     # The clone is cleaned between runs: the warm build must live outside it.
     target_dir = os.environ.get("CARGO_TARGET_DIR", "")
-    if not target_dir or os.path.abspath(target_dir).startswith(repo + os.sep):
+    absolute = os.path.abspath(target_dir) if target_dir else ""
+    if not absolute or absolute == repo or absolute.startswith(repo + os.sep):
         raise SystemExit("set CARGO_TARGET_DIR to a directory outside the measured clone")
     # Cargo runs inside the clone: a relative path would point into it.
     os.environ["CARGO_TARGET_DIR"] = os.path.abspath(target_dir)

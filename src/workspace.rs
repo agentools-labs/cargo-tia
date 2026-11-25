@@ -398,6 +398,12 @@ fn overrides(workspace: &Workspace) -> Overrides {
             config_files.push(relative(root, &file));
             config_files.push(relative(root, &normalize(&file)));
         }
+        // When both exist, Cargo reads `.cargo/config` and not `.cargo/config.toml`.
+        let shadowed = file.file_name().is_some_and(|name| name == "config.toml")
+            && file.with_file_name("config").is_file();
+        if shadowed {
+            continue;
+        }
         let Ok(text) = std::fs::read_to_string(&file) else {
             continue;
         };

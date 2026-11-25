@@ -694,7 +694,7 @@ fn test_runs_cargo_test_only_on_the_selection() {
         "crates/mid/src/lib.rs",
         "#[test]\nfn mid_runs() { assert_eq!(f(), 1); }\n",
     );
-    repo.append("crates/app/Cargo.toml", "\n[features]\nextra = []\n");
+    repo.append("crates/tester/Cargo.toml", "\n[features]\nextra = []\n");
     repo.commit("tests");
 
     repo.append("crates/mid/src/lib.rs", "// changed\n");
@@ -728,8 +728,8 @@ fn test_runs_cargo_test_only_on_the_selection() {
             || stderr(&output).contains("lonely is broken")
     );
 
-    // A feature of an unselected package: real Cargo accepts it after the full-workspace
-    // fallback, runs everything, and reports lonely's failure.
+    // A feature of tester, which this change does not select: real Cargo accepts it after the
+    // full-workspace fallback, runs everything, and reports lonely's failure.
     let output = repo.tia(&[
         "tia",
         "test",
@@ -737,7 +737,7 @@ fn test_runs_cargo_test_only_on_the_selection() {
         "HEAD",
         "--",
         "--features",
-        "app/extra",
+        "tester/extra",
     ]);
     assert!(
         stderr(&output).contains("selected: full workspace"),
@@ -2957,6 +2957,28 @@ fn modules_of_a_path_dependency_build_script_in_another_directory() {
     repo.append("vendor/two/codegen/helper.rs", "// changed\n");
     let json = repo.select("HEAD", &[]);
     assert!(is_full(&json), "{json:#}");
+}
+
+#[test]
+fn a_shadowed_config_toml_is_not_read() {
+    let outside = Repo::new("outside-shadowed");
+    vendor_crate(&outside, "local", &[]);
+    let repo = chain();
+    // Cargo reads `.cargo/config`; the stale `.cargo/config.toml` beside it has no effect.
+    repo.write(".cargo/config", "[build]\njobs = 2\n");
+    repo.write(
+        ".cargo/config.toml",
+        &format!(
+            "paths = [{:?}]\n",
+            outside.path("local").display().to_string()
+        ),
+    );
+    repo.commit("both config files");
+    repo.append("crates/lonely/src/lib.rs", "// changed\n");
+    assert_eq!(selected(&repo.select("HEAD", &[])), ["lonely"]);
+    // A change to either file still selects the full workspace.
+    repo.append(".cargo/config.toml", "\n");
+    assert!(is_full(&repo.select("HEAD", &[])));
 }
 
 /// A small deterministic generator, so the property test needs no extra crate.
