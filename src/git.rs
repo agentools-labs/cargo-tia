@@ -72,6 +72,33 @@ pub fn changed_files(
             )))
         }
     };
+    // In a shallow clone, the cut history can hide the true merge base. Trust only a merge
+    // base that is one of the two commits, as for a pull request merge commit and HEAD^1.
+    let shallow = git(&toplevel, &["rev-parse", "--is-shallow-repository"])
+        .is_ok_and(|value| value.trim() == "true");
+    if shallow {
+        let commit = |revision: &str| {
+            git(
+                &toplevel,
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "-q",
+                    &format!("{revision}^{{commit}}"),
+                ],
+            )
+            .map(|sha| sha.trim().to_string())
+        };
+        let ends = [commit(&base), commit("HEAD")];
+        if !ends
+            .iter()
+            .any(|end| end.as_deref() == Ok(merge_base.as_str()))
+        {
+            return Err(fail(format!(
+                "the clone is shallow and the merge base of `{base}` and HEAD is neither of them"
+            )));
+        }
+    }
 
     let list = |args: &[&str]| -> Result<Vec<String>, Unknown> {
         let output = git(&toplevel, args)
@@ -139,12 +166,16 @@ pub fn changed_files(
         })
         .collect();
     // A submodule can hide edits from the outer diff: in its own index, through its own
-    // `ignore` settings, or in nested submodules. Check each initialized one, recursively.
+    // `ignore` settings, or in nested submodules. Check each initialized one, recursively, and
+    // collect its tracked links.
+    let mut submodule_links = Vec::new();
     for entry in &index {
         let Some((meta, path)) = entry.split_once('\t') else {
             continue;
         };
-        if meta.split(' ').nth(1) == Some("160000") && submodule_unknown(&toplevel.join(path)) {
+        if meta.split(' ').nth(1) == Some("160000")
+            && submodule_unknown(&toplevel, path, &mut submodule_links)
+        {
             hidden_links.push(path.to_string());
         }
     }
@@ -222,14 +253,13 @@ pub fn changed_files(
     let special = to_workspace(&special);
 
     let mut symlinks = Vec::new();
-    for entry in &index {
-        let Some((meta, path)) = entry.split_once('\t') else {
-            continue;
-        };
-        if meta.split(' ').nth(1) != Some("120000") {
-            continue;
-        }
-        let link = toplevel.join(path);
+    let tracked_links = index
+        .iter()
+        .filter_map(|entry| entry.split_once('\t'))
+        .filter(|(meta, _)| meta.split(' ').nth(1) == Some("120000"))
+        .map(|(_, path)| path.to_string());
+    for path in tracked_links.chain(submodule_links) {
+        let link = toplevel.join(&path);
         let Ok(target) = std::fs::read_link(&link) else {
             continue;
         };
@@ -250,10 +280,14 @@ pub fn changed_files(
 
 /// True when an initialized submodule, or one nested in it, has changes or files that git
 /// hides. An uninitialized one is environment: false.
-fn submodule_unknown(dir: &Path) -> bool {
+/// `path` is relative to `toplevel`; the submodule's tracked links are added to `links`, with
+/// paths relative to `toplevel`.
+fn submodule_unknown(toplevel: &Path, path: &str, links: &mut Vec<String>) -> bool {
+    let dir = toplevel.join(path);
     if !dir.join(".git").exists() {
         return false;
     }
+    let dir = dir.as_path();
     let status = git(
         dir,
         &["status", "--porcelain", "-z", "--ignore-submodules=none"],
@@ -265,19 +299,23 @@ fn submodule_unknown(dir: &Path) -> bool {
     if !status.is_empty() {
         return true;
     }
-    index
-        .split('\0')
-        .filter(|entry| !entry.is_empty())
-        .any(|entry| {
-            let Some((meta, path)) = entry.split_once('\t') else {
-                return true;
-            };
-            let mut fields = meta.split(' ');
-            let tag = fields.next().unwrap_or_default();
-            let mode = fields.next().unwrap_or_default();
-            let hidden = tag.chars().all(|c| c.is_ascii_lowercase()) || tag == "S";
-            hidden || (mode == "160000" && submodule_unknown(&dir.join(path)))
-        })
+    let mut unknown = false;
+    for entry in index.split('\0').filter(|entry| !entry.is_empty()) {
+        let Some((meta, inner)) = entry.split_once('\t') else {
+            return true;
+        };
+        let mut fields = meta.split(' ');
+        let tag = fields.next().unwrap_or_default();
+        let mode = fields.next().unwrap_or_default();
+        let inner = format!("{path}/{inner}");
+        unknown |= tag.chars().all(|c| c.is_ascii_lowercase()) || tag == "S";
+        match mode {
+            "120000" => links.push(inner),
+            "160000" => unknown |= submodule_unknown(toplevel, &inner, links),
+            _ => {}
+        }
+    }
+    unknown
 }
 
 /// For a file that git hides (assume-unchanged or skip-worktree): true unless its working-tree

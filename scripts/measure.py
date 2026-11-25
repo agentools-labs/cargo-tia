@@ -140,15 +140,14 @@ def main():
     finally:
         run(["git", "reset", "-q", "--hard"], repo, check=False)
         run(["git", "clean", "-fdxq"], repo, check=False)
-        try:
-            with open(out, "w") as handle:
-                json.dump(rows, handle, indent=2)
-        finally:
-            restore = ["git", "checkout", "-q", branch] if branch else [
-                "git", "checkout", "-q", "--detach", start_ref]
-            restored = run(restore, repo, check=False)
-            if restored.returncode != 0:
-                raise SystemExit(f"cannot restore {repo}:\n{restored.stderr}")
+        # Restore first: the report can be a file inside the clone.
+        restore = ["git", "checkout", "-q", branch] if branch else [
+            "git", "checkout", "-q", "--detach", start_ref]
+        restored = run(restore, repo, check=False)
+        with open(out, "w") as handle:
+            json.dump(rows, handle, indent=2)
+        if restored.returncode != 0:
+            raise SystemExit(f"results saved, but cannot restore {repo}:\n{restored.stderr}")
 
 
 if __name__ == "__main__":

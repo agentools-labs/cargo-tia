@@ -2483,6 +2483,71 @@ fn configuration_comes_from_the_current_directory() {
     assert_eq!(selected(&json), ["core"], "{json:#}");
 }
 
+#[test]
+fn shallow_clones_trust_only_an_endpoint_merge_base() {
+    let origin = chain();
+    for n in 0..3 {
+        origin.append("crates/core/src/lib.rs", &format!("// history {n}\n"));
+        origin.commit("history");
+    }
+    origin.git(&["checkout", "-q", "-b", "feature"]);
+    origin.append("crates/app/src/lib.rs", "// feature\n");
+    origin.commit("feature");
+    origin.git(&["checkout", "-q", "main"]);
+    origin.append("crates/lonely/src/lib.rs", "// main\n");
+    origin.commit("main moves on");
+    let parent = Repo::new("shallow");
+    let status = isolated(Command::new("git"))
+        .args(["clone", "-q", "--depth=2", "--no-single-branch"])
+        .arg(format!("file://{}", origin.dir.display()))
+        .arg(parent.path("work"))
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let clone = Repo {
+        dir: parent.path("work"),
+    };
+    clone.git(&["checkout", "-q", "feature"]);
+    assert_eq!(
+        clone.git(&["rev-parse", "--is-shallow-repository"]).trim(),
+        "true"
+    );
+    // The merge base with origin/main is neither commit: the cut history could hide another.
+    let json = clone.select("origin/main", &[]);
+    assert!(is_full(&json), "{json:#}");
+    assert!(json["full_reasons"][0]
+        .as_str()
+        .unwrap()
+        .contains("shallow"));
+    // HEAD^1 is an ancestor of HEAD, so the merge base is one of the two commits.
+    assert_eq!(selected(&clone.select("HEAD^1", &["--committed"])), ["app"]);
+}
+
+#[test]
+fn links_inside_a_submodule_reach_their_targets() {
+    let sub = Repo::new("sub-link");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink("../../mid/src/lib.rs", sub.path("shared.rs")).unwrap();
+    #[cfg(not(unix))]
+    return;
+    sub.commit("link into the parent repository");
+    let repo = chain();
+    repo.git(&[
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        sub.dir.to_str().unwrap(),
+        "crates/lonely/vendor",
+    ]);
+    repo.commit("submodule");
+    // lonely compiles the shared file through the link in its submodule.
+    repo.append("crates/mid/src/lib.rs", "// changed\n");
+    let json = repo.select("HEAD", &[]);
+    assert!(selected(&json).contains(&"lonely".to_string()), "{json:#}");
+}
+
 /// A small deterministic generator, so the property test needs no extra crate.
 struct Rng(u64);
 
