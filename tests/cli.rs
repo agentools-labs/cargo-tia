@@ -1960,6 +1960,26 @@ fn non_ascii_names_on_both_sides_select_the_whole_workspace() {
 }
 
 #[test]
+fn line_ending_changes_that_git_normalizes_count() {
+    let repo = chain();
+    repo.write(".gitattributes", "*.txt text eol=crlf\n");
+    repo.write("crates/lonely/tests/data.txt", "a\r\nb\r\n");
+    repo.commit("fixture with CRLF line endings");
+    // Rewriting the same bytes is no change.
+    repo.write("crates/lonely/tests/data.txt", "a\r\nb\r\n");
+    assert!(selected(&repo.select("HEAD", &[])).is_empty());
+    // An editor saves LF: git diff shows nothing, but the test reads other bytes.
+    repo.write("crates/lonely/tests/data.txt", "a\nb\n");
+    let json = repo.select("HEAD", &[]);
+    assert_eq!(selected(&json), ["lonely"], "{json:#}");
+    // With --committed, the working tree no longer matches HEAD.
+    repo.append("crates/app/src/lib.rs", "// changed\n");
+    repo.git(&["add", "crates/app/src/lib.rs"]);
+    repo.git(&["commit", "-q", "-m", "change app"]);
+    assert!(is_full(&repo.select("HEAD^", &["--committed"])));
+}
+
+#[test]
 fn case_only_renames_count() {
     let repo = chain();
     repo.write("crates/lonely/src/worker.rs", "// worker\n");

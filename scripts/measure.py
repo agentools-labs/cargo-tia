@@ -99,11 +99,23 @@ def compile_failures(stderr):
     return sorted(set(re.findall(r"could not compile `([^`]+)`", build_phase(stderr))))
 
 
-def workspace_root(repo):
-    metadata = json.loads(run(
-        ["cargo", "metadata", "--no-deps", "--format-version", "1", "--offline"], repo
-    ).stdout)
-    return metadata["workspace_root"]
+def build_lockfiles(top):
+    """Every Cargo.lock that the build wrote or changed, by absolute path, with its content.
+
+    Also a lockfile at a configured path (resolver.lockfile-path) inside the repository.
+    """
+    status = run(
+        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored"], top
+    ).stdout
+    saved = {}
+    for entry in status.split("\0"):
+        path = entry[3:]
+        if entry and os.path.basename(path) == "Cargo.lock":
+            full = os.path.join(top, path)
+            if os.path.isfile(full):
+                with open(full, "rb") as handle:
+                    saved[full] = handle.read()
+    return saved
 
 
 def cargo_test(args, cwd):
@@ -233,23 +245,20 @@ def main():
             if index < timed_count:
                 build = run(["cargo", "test", "--workspace", "--no-run"], repo, check=False)
                 row["build_ok"] = build.returncode == 0
-                # The build resolved the dependencies. Cleaning deletes an untracked Cargo.lock
-                # (and resets a tracked one): put the build's lockfile back, so that every run
+                # The build resolved the dependencies. Cleaning deletes an untracked lockfile
+                # and resets a tracked one: put the build's lockfiles back, so that every run
                 # uses the same resolution without resolving again.
-                lock_path = os.path.join(workspace_root(repo), "Cargo.lock")
-                lock = None
-                if os.path.exists(lock_path):
-                    with open(lock_path, "rb") as handle:
-                        lock = handle.read()
-                locked = ["--locked"] if lock is not None else []
+                lockfiles = build_lockfiles(top)
+                locked = ["--locked"] if row["build_ok"] else []
 
                 def clean():
                     # Tests can write files: reset the repository before each run.
                     run(["git", "reset", "-q", "--hard"], top)
                     run(["git", "clean", "-ffdxq"], top)
-                    if lock is not None:
-                        with open(lock_path, "wb") as handle:
-                            handle.write(lock)
+                    for path, content in lockfiles.items():
+                        os.makedirs(os.path.dirname(path), exist_ok=True)
+                        with open(path, "wb") as handle:
+                            handle.write(content)
 
                 clean()
                 cargo_test(["--workspace", *locked], repo)  # warm-up, untimed

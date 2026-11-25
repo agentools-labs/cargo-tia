@@ -253,7 +253,9 @@ This repository uses the tool on itself in [its CI workflow](.github/workflows/c
   `cargo-tia`, the tool calls `cargo` through rustup with `RUSTUP_AUTO_INSTALL=0`, which rustup older
   than 1.28 also ignores.
 - To compare the working tree, git runs the clean filters that the repository configures, for example
-  Git LFS, as `git status` does. The tool turns off `core.fsmonitor` hooks.
+  Git LFS, as `git status` does. Git also normalizes line endings before it compares. A file that
+  differs from its checkout only in line endings still counts as changed when its line endings differ
+  from what the `eol` attribute, `core.autocrlf` or `core.eol` makes a checkout write. The tool turns off `core.fsmonitor` hooks.
 - Windows is not tested.
 
 ## Measurements

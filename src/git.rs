@@ -186,6 +186,32 @@ pub fn changed_files(
         Ok((paths, special))
     };
     let untracked = || list(&["ls-files", "-z", "--others", "--exclude-standard"]);
+    // Git converts line endings before it compares, so `git diff` drops a file that differs
+    // from its checkout only in line endings, while Cargo reads other bytes. The candidates
+    // are the files that a diff without the index refresh still reports.
+    let line_endings = |revision: &str, reported: &[String]| -> Result<Vec<String>, Unknown> {
+        let unrefreshed = list(&[
+            "-c",
+            "diff.autoRefreshIndex=false",
+            "diff",
+            "--raw",
+            "-z",
+            "--no-abbrev",
+            "--no-renames",
+            "--no-ext-diff",
+            "--no-color",
+            "--ignore-submodules=none",
+            revision,
+            "--",
+        ])?;
+        let candidates: Vec<String> = unrefreshed
+            .chunks(2)
+            .filter_map(|pair| pair.get(1))
+            .filter(|path| !reported.contains(path))
+            .cloned()
+            .collect();
+        Ok(line_ending_changes(&toplevel, &candidates))
+    };
     // Each entry is "<tag> <mode> <object> <stage>\t<path>". `git diff` skips the working-tree
     // content of entries marked assume-unchanged (lowercase tag) or skip-worktree (`S`).
     let index = list(&["ls-files", "-z", "-v", "-s"])?;
@@ -271,6 +297,7 @@ pub fn changed_files(
             .iter()
             .filter(|path| dirty.contains(path) && !differs(&toplevel, "HEAD", path))
             .collect();
+        let converted = line_endings("HEAD", &dirty)?;
         // Such a file can be a link that a package reads through: it still reaches its target.
         untracked_links.extend(
             unindexed
@@ -285,6 +312,7 @@ pub fn changed_files(
             .iter()
             .chain(&new_files)
             .find(|path| !unindexed.contains(path))
+            .or(converted.first())
             .or(hidden_links.first())
             .cloned()
             .or_else(|| {
@@ -357,6 +385,8 @@ pub fn changed_files(
         // Hidden links and submodules with hidden edits are changes of unknown effect.
         paths.extend(hidden_links.iter().cloned());
         special.extend(hidden_links);
+        let converted = line_endings(&merge_base, &paths)?;
+        paths.extend(converted);
     }
 
     let root = normalize(workspace_root);
@@ -403,6 +433,80 @@ pub fn changed_files(
         repository: relative(&root, &toplevel),
         uncertain,
     })
+}
+
+/// The candidates whose line endings differ from what a checkout writes: from the `eol`
+/// attribute, or for text files from `core.autocrlf` and `core.eol`. Git normalizes line
+/// endings when it compares, so its diff does not show such a file. When the line endings
+/// cannot be read, every candidate counts.
+fn line_ending_changes(toplevel: &Path, candidates: &[String]) -> Vec<String> {
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    // Each entry is "i/<index> w/<working tree> attr/<attributes>\t<path>".
+    let Ok(listing) = git(toplevel, &["ls-files", "-z", "--eol"]) else {
+        return candidates.to_vec();
+    };
+    let setting = |key: &str| {
+        git(toplevel, &["config", "--get", key])
+            .map(|value| value.trim().to_ascii_lowercase())
+            .unwrap_or_default()
+    };
+    let autocrlf = setting("core.autocrlf");
+    let core_eol = setting("core.eol");
+    // What a checkout writes for a text file without an `eol` attribute.
+    let text_eol = match (autocrlf.as_str(), core_eol.as_str()) {
+        ("true", _) => "crlf",
+        ("input", _) => "lf",
+        (_, "crlf") => "crlf",
+        (_, "lf") => "lf",
+        _ if cfg!(windows) => "crlf",
+        _ => "lf",
+    };
+    let mut changed = Vec::new();
+    for entry in listing.split('\0').filter(|entry| !entry.is_empty()) {
+        let Some((meta, path)) = entry.split_once('\t') else {
+            continue;
+        };
+        if !candidates.iter().any(|candidate| candidate == path) {
+            continue;
+        }
+        let field = |prefix: &str| {
+            meta.split_whitespace()
+                .find_map(|part| part.strip_prefix(prefix))
+                .unwrap_or_default()
+        };
+        let (index, work) = (field("i/"), field("w/"));
+        let attributes: Vec<&str> = meta
+            .split_once("attr/")
+            .map_or(Vec::new(), |(_, attributes)| {
+                attributes.split_whitespace().collect()
+            });
+        // Only an index blob with LF line endings converts both ways; a binary file does not.
+        if index != "lf"
+            || attributes.contains(&"-text")
+            || !matches!(work, "lf" | "crlf" | "mixed")
+        {
+            continue;
+        }
+        let expected = if attributes.contains(&"eol=crlf") {
+            "crlf"
+        } else if attributes.contains(&"eol=lf") {
+            "lf"
+        } else if attributes.iter().any(|a| *a == "text" || *a == "text=auto") {
+            text_eol
+        } else if autocrlf == "true" {
+            "crlf"
+        } else if autocrlf == "input" {
+            "lf"
+        } else {
+            continue;
+        };
+        if work != expected {
+            changed.push(path.to_string());
+        }
+    }
+    changed
 }
 
 /// True when two paths name one directory entry, as two spellings do on a case-insensitive
