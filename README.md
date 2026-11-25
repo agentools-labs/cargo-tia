@@ -88,7 +88,8 @@ workspace.
    - **Outside**: the file is in no package. This selects the full workspace.
 
    A changed file that a tracked symbolic link points to also changes the package that holds the link.
-   The report shows that path with `(link to ...)`.
+   The report shows that path with `(link to ...)`. A link to the workspace root or above it reaches
+   every file, so any change changes the package that holds it.
 5. It selects the changed packages and every member that depends on them, directly or through other
    members. Normal, dev, build, optional and target-specific dependencies all count. Cargo does not
    report every edge, so two kinds of members count as dependents of every member:
@@ -96,9 +97,10 @@ workspace.
    - a member with registry or git dependencies, when a `[patch]` or `[replace]` entry points to a
      member: those dependencies can depend on the patched member. This counts for the patched
      members only. A local patch path that is not a member counts for every member, and it is a
-     path dependency of each member with registry or git dependencies. The tool reads
-     patches as text from the workspace manifest and from the Cargo configuration files in the
-     workspace root, the current directory, their parents and `CARGO_HOME`.
+     path dependency of each member with registry or git dependencies. Cargo `paths` overrides
+     count the same way. The tool reads patches and overrides as text from the workspace manifest
+     and from the Cargo configuration files in the workspace root, the current directory, their
+     parents and `CARGO_HOME`.
 
 These changes select the full workspace:
 
@@ -117,8 +119,8 @@ These changes select the full workspace:
 - Any case where git cannot give a single change set: no merge base (for example in a shallow clone),
   more than one merge base (criss-cross merges), an unknown base, no `origin/HEAD` and no `--base`, or no
   repository.
-- A path dependency outside the git repository, also as a path dependency of a path dependency. Git
-  cannot see its changes.
+- A path dependency, local patch, `paths` override, target or build script outside the git repository,
+  also as a path dependency of a path dependency. Git cannot see changes there.
 - With `--committed`: a `Cargo.toml` with uncommitted changes, or one that git hides with
   assume-unchanged or skip-worktree. The tool reads the workspace from the working tree, so the
   working tree must match `HEAD` there.
@@ -182,11 +184,61 @@ This repository uses the tool on itself in [its CI workflow](.github/workflows/c
 - In a partial clone, git 2.45 and newer cannot fetch missing objects for the tool: the command fails
   and the tool selects the full workspace. Older git also gets no transport, through
   `GIT_ALLOW_PROTOCOL`.
+- To compare the working tree, git runs the clean filters that the repository configures, for example
+  Git LFS, as `git status` does. The tool turns off `core.fsmonitor` hooks.
 - Windows is not tested.
 
 ## Measurements
 
-MEASUREMENTS
+Measured on 2026-11-25 on an Apple Silicon Mac with Rust 1.99.1, with
+[scripts/measure.py](scripts/measure.py) and the default configuration (no ignore globs). Each commit
+`C` is compared with its first parent: `cargo tia list --json --committed --base C^1`.
+
+**Selection** over the last 50 first-parent commits of each workspace. One selection takes 0.1 to
+0.3 seconds.
+
+| Workspace | Packages | Partial | Empty | Full | Mean selected |
+|---|---|---|---|---|---|
+| [ripgrep](https://github.com/BurntSushi/ripgrep) at `3e85c6c` | 10 | 28 | 2 | 20 | 5.5 (55%) |
+| [tracing](https://github.com/tokio-rs/tracing) at `8d4d4d6` | 16 | 28 | 0 | 22 | 13.2 (82%) |
+| [rust-analyzer](https://github.com/rust-lang/rust-analyzer) at `9c74e78e0` | 46 | 37 | 0 | 13 | 21.2 (46%) |
+
+Most full selections come from files outside every package (CI workflows, documents, release files)
+and from manifest changes. In tracing, 19 of the 22 full selections come from member `Cargo.toml`
+changes. Ignore globs for documents and CI files change the result:
+
+- ripgrep with `*.md`, `.github/**`, `pkg/**`, `HomebrewFormula/**` and `cliff.toml` ignored: 6 full,
+  32 partial, 12 empty, mean 2.9 packages (29%).
+- tracing with `*.md` and `.github/**` ignored: mean 12.5 packages (78%).
+- rust-analyzer with `*.md`, `.github/**`, `editors/**` and `docs/**` ignored: 6 full, 38 partial, 6
+  empty, mean 14.9 packages (33%).
+
+**Test time** for the newest commits. For each commit, the script builds the workspace and runs its
+tests once without timing, then times `cargo test --workspace` and `cargo test` with the selection.
+So the numbers compare test time with a warm build. They do not include the compile time that a
+selection saves in a cold build. A selection with other features can compile some packages again,
+and that time counts against the selection.
+
+| Workspace | Commits (partial) | Full runs | Selected runs | Saved | Saved on partial commits |
+|---|---|---|---|---|---|
+| ripgrep | 10 (3) | 46.5 s | 37.5 s | 19% | 65% |
+| tracing | 8 (6) | 175.7 s | 157.3 s | 10% | 14% |
+| rust-analyzer | 5 (3) | 94.4 s | 91.0 s | 4% | 6% |
+
+In tracing and rust-analyzer, most changes reach the central packages, whose tests take most of the
+time. One rust-analyzer selection (14 of 46 packages) took 20.6 s against 14.8 s for the full run,
+because it compiled packages again with other features.
+
+**Missed failures.** No test failed in the 23 full runs, so the history replay could not miss one. A
+fault injection on ripgrep at `3e85c6c` and `b674410` broke code and kept the tests. Every package
+that failed in the full run was in the selection:
+
+| Fault | Selected | Failing packages in the full run | Missed |
+|---|---|---|---|
+| Revert the fix in `crates/printer/src/standard.rs` | 3 of 10 | ripgrep | none |
+| Revert `crates/core/flags/{defs,hiargs}.rs` | 1 of 10 | ripgrep | none |
+| Invert `GlobSet::is_match` | 5 of 10 | globset (does not compile) | none |
+| Invert the default `Matcher::is_match` | 7 of 10 | grep-pcre2, grep-printer, grep-regex, grep-searcher, ripgrep | none |
 
 ## Alternatives
 
