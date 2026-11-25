@@ -2307,17 +2307,22 @@ fn hidden_edits_inside_a_submodule_select_the_whole_workspace() {
 #[test]
 fn changes_below_a_paths_override_select_the_whole_workspace() {
     let repo = chain();
-    repo.append("Cargo.toml", "exclude = [\"vendor\"]\n");
-    repo.write(".cargo/config.toml", "paths = [\"vendor\"]\n");
+    // The override crate lies inside lonely's directory but is not a member.
     repo.write(
-        "vendor/uuid/Cargo.toml",
+        "Cargo.toml",
+        "[workspace]\nresolver = \"2\"\nmembers = [\"crates/*\"]\nexclude = [\"crates/lonely/vendor\"]\n",
+    );
+    repo.write(".cargo/config.toml", "paths = [\"crates/lonely/vendor\"]\n");
+    repo.write(
+        "crates/lonely/vendor/uuid/Cargo.toml",
         "[package]\nname = \"uuid\"\nversion = \"0.1.0\"\nedition = \"2021\"\nbuild = \"generate.rs\"\n",
     );
-    repo.write("vendor/uuid/src/lib.rs", "pub fn u() {}\n");
-    repo.write("vendor/uuid/generate.rs", "fn main() {}\n");
+    repo.write("crates/lonely/vendor/uuid/src/lib.rs", "pub fn u() {}\n");
+    repo.write("crates/lonely/vendor/uuid/generate.rs", "fn main() {}\n");
     repo.commit("override with a build script");
-    repo.append("vendor/uuid/generate.rs", "// changed\n");
-    assert!(is_full(&repo.select("HEAD", &[])));
+    repo.append("crates/lonely/vendor/uuid/generate.rs", "// changed\n");
+    let json = repo.select("HEAD", &[]);
+    assert!(is_full(&json), "{json:#}");
 }
 
 #[cfg(unix)]
