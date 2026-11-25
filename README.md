@@ -84,8 +84,8 @@ those against the selected packages.
 1. It finds the merge base of the base revision and `HEAD`. The default base is `origin/HEAD`. When
    `origin/HEAD` is not set, the tool does not guess a branch: pass `--base`.
 2. It lists the files that changed since the merge base. The list includes staged, unstaged and
-   untracked files, and edits to files marked assume-unchanged or skip-worktree. Without a sparse
-   checkout, a missing skip-worktree file counts as deleted. Git configuration
+   untracked files. For files marked assume-unchanged or skip-worktree, the file in the working tree
+   decides, not the index. Without a sparse checkout, a missing skip-worktree file counts as deleted. Git configuration
    such as `diff.ignoreSubmodules`, `core.fsmonitor`, `core.fileMode`, `core.ignoreCase`,
    `core.trustctime` or `core.checkStat` cannot hide a change. With `--committed`, the list includes only
    committed changes, and the working tree must match `HEAD`.

@@ -276,11 +276,18 @@ pub fn changed_files(
                 .into_iter()
                 .filter(|path| !restored.contains(path)),
         );
-        paths.extend(
-            hidden
-                .into_iter()
-                .filter(|path| differs(&toplevel, &merge_base, path)),
-        );
+        // Git compares a hidden entry by its index content, not by the file: the file
+        // decides. A hidden link or submodule stays a change (below).
+        let (changed, same): (Vec<String>, Vec<String>) = hidden
+            .into_iter()
+            .partition(|path| differs(&toplevel, &merge_base, path));
+        let same: Vec<String> = same
+            .into_iter()
+            .filter(|path| !hidden_links.contains(path))
+            .collect();
+        paths.retain(|path| !same.contains(path));
+        special.retain(|path| !same.contains(path));
+        paths.extend(changed);
         // Hidden links and submodules with hidden edits are changes of unknown effect.
         paths.extend(hidden_links.iter().cloned());
         special.extend(hidden_links);

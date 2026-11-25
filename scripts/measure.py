@@ -69,7 +69,8 @@ def cargo_test(args, cwd):
 def main():
     tia, repo, select_count, timed_count, out = sys.argv[1:6]
     # Subprocesses run inside the measured repository, so make the given paths absolute.
-    tia = os.path.abspath(tia if os.sep in tia else (shutil.which(tia) or tia))
+    # Resolved: a link inside the clone would be cleaned away with it.
+    tia = os.path.realpath(tia if os.sep in tia else (shutil.which(tia) or tia))
     if not os.path.isfile(tia):
         raise SystemExit(f"cannot find the cargo-tia executable: {tia}")
     repo, out = os.path.abspath(repo), os.path.abspath(out)

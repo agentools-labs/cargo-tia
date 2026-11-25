@@ -428,6 +428,7 @@ fn main() -> ExitCode {
                     .chain(&workspace.build_scripts)
                     .chain(&workspace.foreign_files)
                     .chain(&workspace.source_dirs)
+                    .chain(&workspace.path_overrides)
                     .chain(changes.symlinks.iter().map(|(_, target)| target))
                     // An include from a configuration file in the repository. Configuration outside
                     // the repository, such as in CARGO_HOME, is environment.
@@ -446,7 +447,11 @@ fn main() -> ExitCode {
                         selection.make_full(&workspace, reason);
                     }
                 }
-                if let Some(dir) = workspace.path_overrides.first() {
+                if let Some(dir) = workspace
+                    .path_overrides
+                    .first()
+                    .filter(|_| !changes.files.is_empty())
+                {
                     let reason = format!("Cargo `paths` override `{dir}` can replace any package");
                     selection.make_full(&workspace, reason);
                 }
@@ -519,12 +524,27 @@ fn run(cargo: &OsStr, subcommand: &[&str], selection: &[String], extra: &[OsStri
     command.args(subcommand).args(selection).args(extra);
     match command.status() {
         Ok(status) if status.success() => ExitCode::SUCCESS,
-        Ok(status) => ExitCode::from(status.code().map_or(1, |code| code.clamp(1, 255) as u8)),
+        Ok(status) => ExitCode::from(failure_code(status)),
         Err(error) => {
             eprintln!("error: cannot run cargo: {error}");
             ExitCode::from(2)
         }
     }
+}
+
+/// The exit code of a failed child, or 128 plus the signal that ended it, as a shell reports it.
+fn failure_code(status: std::process::ExitStatus) -> u8 {
+    if let Some(code) = status.code() {
+        return code.clamp(1, 255) as u8;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return (128 + signal).clamp(1, 255) as u8;
+        }
+    }
+    1
 }
 
 enum Base {

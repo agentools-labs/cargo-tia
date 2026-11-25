@@ -154,7 +154,10 @@ fn isolated(mut command: Command) -> Command {
         .env("GIT_AUTHOR_NAME", "test")
         .env("GIT_AUTHOR_EMAIL", "test@example.com")
         .env("GIT_COMMITTER_NAME", "test")
-        .env("GIT_COMMITTER_EMAIL", "test@example.com");
+        .env("GIT_COMMITTER_EMAIL", "test@example.com")
+        // The tool reads these: the caller's environment must not change the results.
+        .env_remove("NEXTEST_NO_TESTS")
+        .env_remove("RUST_TARGET_PATH");
     command
 }
 
@@ -857,6 +860,27 @@ fn assume_unchanged_files_still_count() {
     ]);
     repo.append("crates/lonely/src/lib.rs", "// hidden from git diff\n");
     assert_eq!(selected(&repo.select("HEAD", &[])), ["lonely"]);
+}
+
+#[test]
+fn a_hidden_file_restored_to_the_base_is_no_change() {
+    let repo = chain();
+    let old = fs::read_to_string(repo.path("crates/lonely/src/lib.rs")).unwrap();
+    repo.append("crates/lonely/src/lib.rs", "pub fn g() {}\n");
+    repo.commit("change lonely");
+    // Git reports the entry by its index content, which differs from HEAD^; the file does not.
+    repo.git(&[
+        "update-index",
+        "--skip-worktree",
+        "crates/lonely/src/lib.rs",
+    ]);
+    repo.write("crates/lonely/src/lib.rs", &old);
+    let json = repo.select("HEAD^", &[]);
+    assert!(selected(&json).is_empty(), "{json:#}");
+    assert!(!is_full(&json), "{json:#}");
+    // The same file with other content is a change.
+    repo.append("crates/lonely/src/lib.rs", "// edited\n");
+    assert_eq!(selected(&repo.select("HEAD^", &[])), ["lonely"]);
 }
 
 #[test]
@@ -3041,6 +3065,32 @@ fn a_member_at_a_target_discovery_directory() {
 
 #[cfg(unix)]
 #[test]
+fn a_signal_that_ends_cargo_gives_the_shell_status() {
+    use std::os::unix::fs::PermissionsExt;
+    let repo = chain();
+    let script = repo.path("killed-cargo.sh");
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = metadata ]; then exec '{}' \"$@\"; fi\nkill -9 $$\n",
+            env!("CARGO")
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(repo.path(".git/info/exclude"), "killed-cargo.sh\n").unwrap();
+    repo.append("crates/lonely/src/lib.rs", "// changed\n");
+    let output = isolated(Command::new(BIN))
+        .current_dir(&repo.dir)
+        .env("CARGO", &script)
+        .args(["tia", "test", "--base", "HEAD"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(137), "{}", stderr(&output));
+}
+
+#[cfg(unix)]
+#[test]
 fn nextest_keeps_its_no_tests_policy_for_a_whole_workspace() {
     let repo = chain();
     fs::write(
@@ -3167,6 +3217,9 @@ fn a_paths_override_selects_the_whole_workspace() {
     );
     repo.append("Cargo.toml", "exclude = [\"overrides\"]\n");
     repo.commit("paths override that compiles core's file");
+    // No change: nothing to select.
+    let json = repo.select("HEAD", &[]);
+    assert!(selected(&json).is_empty() && !is_full(&json), "{json:#}");
     repo.append("crates/core/src/lib.rs", "// changed\n");
     let json = repo.select("HEAD", &[]);
     assert!(is_full(&json), "{json:#}");
