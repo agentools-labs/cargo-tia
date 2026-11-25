@@ -1511,7 +1511,13 @@ fn path_dependency_target_inside_a_member_reaches_the_users() {
     repo.commit("shim library inside core");
     // The file belongs to core; lonely uses it through the shim.
     repo.append("crates/core/src/compat.rs", "// changed\n");
-    assert!(selected(&repo.select("HEAD", &[])).contains(&"lonely".to_string()));
+    let json = repo.select("HEAD", &[]);
+    assert!(is_full(&json), "{json:#}");
+    let reason = json["full_reasons"][0].as_str().unwrap();
+    assert!(
+        reason.contains("next to a target of `vendor/shim`"),
+        "{reason}"
+    );
 }
 
 #[test]
@@ -1785,6 +1791,49 @@ fn committed_only_distrusts_uncommitted_cargo_configuration() {
     repo.append("crates/core/src/lib.rs", "pub fn g() {}\n");
     repo.commit("core");
     repo.write(".cargo/config.toml", "[build]\njobs = 4\n");
+    let json = repo.select("HEAD~1", &["--committed"]);
+    assert!(is_full(&json), "{json:#}");
+}
+
+#[test]
+fn path_dependency_inside_a_member_source_directory() {
+    let repo = chain();
+    repo.append("Cargo.toml", "exclude = [\"crates/app/src/engine\"]\n");
+    // app compiles engine/mod.rs as a module; engine is also a non-member crate of lonely.
+    repo.write("crates/app/src/lib.rs", "mod engine;\n");
+    repo.write(
+        "crates/app/src/engine/Cargo.toml",
+        "[package]\nname = \"engine\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[lib]\npath = \"mod.rs\"\n",
+    );
+    repo.write("crates/app/src/engine/mod.rs", "pub fn e() {}\n");
+    let manifest = fs::read_to_string(repo.path("crates/lonely/Cargo.toml")).unwrap();
+    repo.write(
+        "crates/lonely/Cargo.toml",
+        &manifest.replace(
+            "[dependencies]\n",
+            "[dependencies]\nengine = { path = \"../app/src/engine\" }\n",
+        ),
+    );
+    repo.commit("engine");
+    repo.append("crates/app/src/engine/mod.rs", "// changed\n");
+    let json = repo.select("HEAD", &[]);
+    // Cargo 1.99 makes `engine` a member despite `exclude`; either way app and lonely run.
+    let got = selected(&json);
+    assert!(
+        got.contains(&"app".to_string()) && got.contains(&"lonely".to_string()),
+        "{json:#}"
+    );
+}
+
+#[test]
+fn committed_only_distrusts_included_configuration() {
+    let repo = chain();
+    repo.write(".cargo/config.toml", "include = [\"../ci/patches.toml\"]\n");
+    repo.write("ci/patches.toml", "[env]\nX = \"1\"\n");
+    repo.commit("config");
+    repo.append("crates/core/src/lib.rs", "pub fn g() {}\n");
+    repo.commit("core");
+    repo.write("ci/patches.toml", "[env]\nX = \"2\"\n");
     let json = repo.select("HEAD~1", &["--committed"]);
     assert!(is_full(&json), "{json:#}");
 }

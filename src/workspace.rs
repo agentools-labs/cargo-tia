@@ -123,8 +123,26 @@ pub fn load(cargo: &OsStr, manifest_path: Option<&Path>) -> Result<Workspace, St
         workspace.foreign = foreign.into_iter().collect();
     }
     follow_path_dependencies(&mut workspace);
+    add_nested_users(&mut workspace);
     mark_cross_targets(&mut workspace);
     Ok(workspace)
+}
+
+/// A non-member path dependency inside the source directory of a member's target can hold
+/// modules of that target, so the member counts as one of its users.
+fn add_nested_users(workspace: &mut Workspace) {
+    for (src, declarer) in &workspace.targets {
+        if workspace.build_scripts.contains(src) {
+            continue;
+        }
+        let source_dir = src.rsplit_once('/').map_or("", |(dir, _)| dir);
+        for (dir, users) in &mut workspace.foreign {
+            if contains(source_dir, dir) && !users.contains(declarer) {
+                users.push(*declarer);
+                users.sort_unstable();
+            }
+        }
+    }
 }
 
 /// Who owns a path: the deepest member, or non-member path dependency, whose directory holds it.
@@ -861,6 +879,40 @@ mod tests {
         // app (index 0) now depends on engine (index 1).
         assert_eq!(ws.packages[0].deps, [1]);
         assert!(ws.packages[1].deps.is_empty());
+    }
+
+    #[test]
+    fn path_dependencies_inside_a_source_directory_gain_its_package_as_user() {
+        let mut ws = Workspace {
+            packages: vec![
+                Package {
+                    name: "app".to_string(),
+                    dir: "crates/app".to_string(),
+                    deps: Vec::new(),
+                    external: false,
+                },
+                Package {
+                    name: "lonely".to_string(),
+                    dir: "crates/lonely".to_string(),
+                    deps: Vec::new(),
+                    external: false,
+                },
+            ],
+            targets: vec![
+                ("crates/app/src/lib.rs".to_string(), 0),
+                ("crates/app/build.rs".to_string(), 0),
+            ],
+            build_scripts: vec!["crates/app/build.rs".to_string()],
+            foreign: vec![
+                ("crates/app/src/engine".to_string(), vec![1]),
+                ("crates/app/tools".to_string(), vec![1]),
+            ],
+            ..Workspace::default()
+        };
+        add_nested_users(&mut ws);
+        assert_eq!(ws.foreign[0].1, [0, 1]);
+        // The build script's directory does not count.
+        assert_eq!(ws.foreign[1].1, [1]);
     }
 
     #[test]

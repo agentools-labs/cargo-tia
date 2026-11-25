@@ -167,6 +167,13 @@ fn parse(args: Vec<OsString>) -> Result<Parsed, String> {
             flag,
             "--package" | "--workspace" | "--all" | "--exclude" | "--manifest-path"
         ) || short_selection_flag(&arg);
+        // Nextest's build reuse fixes the packages and conflicts with `--workspace`.
+        let reuses = matches!(flag, "--archive-file" | "--binaries-metadata");
+        if reuses {
+            return Err(format!(
+                "`{arg}` after `--` reuses a build; run nextest directly for that"
+            ));
+        }
         if selects {
             return Err(format!(
                 "`{arg}` after `--` would change the packages; pass --manifest-path before `--`"
@@ -235,51 +242,55 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let (base, selection) =
-        match git::changed_files(&workspace.root, options.base.as_deref(), options.committed) {
-            Ok(changes) => {
-                let mut selection = select::select(
-                    &workspace,
-                    &options.rules,
-                    &changes.files,
-                    &changes.symlinks,
-                    &changes.special,
-                );
-                // Git cannot see changes outside the repository: in path dependencies, or in
-                // targets and build scripts declared there.
-                let repository = workspace::normalize(&workspace.root.join(&changes.repository));
-                let inputs = workspace
-                    .foreign
-                    .iter()
-                    .map(|(dir, _)| dir)
-                    .chain(workspace.targets.iter().map(|(src, _)| src))
-                    .chain(&workspace.build_scripts)
-                    .chain(&workspace.foreign_files)
-                    .chain(&workspace.source_dirs)
-                    .chain(&workspace.config_files)
-                    .chain(changes.symlinks.iter().map(|(_, target)| target));
-                for input in inputs {
-                    if !workspace::normalize(&workspace.root.join(input)).starts_with(&repository) {
-                        let reason = format!("`{input}` is outside the git repository");
-                        selection.make_full(&workspace, reason);
-                    }
-                }
-                for dir in &workspace.unresolved {
-                    let reason = format!("cannot find the workspace that `{dir}` inherits from");
+    let (base, selection) = match git::changed_files(
+        &workspace.root,
+        options.base.as_deref(),
+        options.committed,
+        &workspace.config_files,
+    ) {
+        Ok(changes) => {
+            let mut selection = select::select(
+                &workspace,
+                &options.rules,
+                &changes.files,
+                &changes.symlinks,
+                &changes.special,
+            );
+            // Git cannot see changes outside the repository: in path dependencies, or in
+            // targets and build scripts declared there.
+            let repository = workspace::normalize(&workspace.root.join(&changes.repository));
+            let inputs = workspace
+                .foreign
+                .iter()
+                .map(|(dir, _)| dir)
+                .chain(workspace.targets.iter().map(|(src, _)| src))
+                .chain(&workspace.build_scripts)
+                .chain(&workspace.foreign_files)
+                .chain(&workspace.source_dirs)
+                .chain(&workspace.config_files)
+                .chain(changes.symlinks.iter().map(|(_, target)| target));
+            for input in inputs {
+                if !workspace::normalize(&workspace.root.join(input)).starts_with(&repository) {
+                    let reason = format!("`{input}` is outside the git repository");
                     selection.make_full(&workspace, reason);
                 }
-                if config_override(&options) {
-                    let reason =
-                        "a configuration option after `--` can change every package".to_string();
-                    selection.make_full(&workspace, reason);
-                }
-                (Base::Known(changes.base, changes.merge_base), selection)
             }
-            Err(unknown) => {
-                let selection = Selection::full(&workspace, unknown.reason);
-                (Base::Unknown(unknown.base), selection)
+            for dir in &workspace.unresolved {
+                let reason = format!("cannot find the workspace that `{dir}` inherits from");
+                selection.make_full(&workspace, reason);
             }
-        };
+            if config_override(&options) {
+                let reason =
+                    "a configuration option after `--` can change every package".to_string();
+                selection.make_full(&workspace, reason);
+            }
+            (Base::Known(changes.base, changes.merge_base), selection)
+        }
+        Err(unknown) => {
+            let selection = Selection::full(&workspace, unknown.reason);
+            (Base::Unknown(unknown.base), selection)
+        }
+    };
 
     match options.mode {
         Mode::List if options.json => {
@@ -571,6 +582,8 @@ mod tests {
             &["test", "--", "-vvp"],
             &["test", "--", "-m", "../other/Cargo.toml"],
             &["test", "--", "-qm../other/Cargo.toml"],
+            &["nextest", "--", "--archive-file", "tests.tar.zst"],
+            &["nextest", "--", "--binaries-metadata=meta.json"],
             &["test", "list"],
             &["--bogus"],
         ] {

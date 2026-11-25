@@ -34,10 +34,14 @@ pub struct Unknown {
 /// Without `base`, the base is `origin/HEAD`, the default branch of `origin`. Unless
 /// `committed_only` is set, the list includes staged, unstaged and untracked (not ignored)
 /// files, and files marked assume-unchanged.
+///
+/// `inputs` are more files, relative to the workspace root, that the tool read from the working
+/// tree (included Cargo configuration). With `committed_only`, they must match `HEAD`.
 pub fn changed_files(
     workspace_root: &Path,
     base: Option<&str>,
     committed_only: bool,
+    inputs: &[String],
 ) -> Result<Changes, Unknown> {
     let fail = |base: Option<&str>, reason: String| Unknown {
         base: base.map(str::to_string),
@@ -151,7 +155,9 @@ pub fn changed_files(
         let (mut dirty, _) = diff(&["HEAD"])?;
         dirty.extend(untracked()?);
         dirty.extend(hidden.iter().cloned());
-        if let Some(manifest) = dirty.iter().find(|path| is_input(path)) {
+        let root = normalize(workspace_root);
+        let read = |path: &String| inputs.contains(&relative(&root, &toplevel.join(path)));
+        if let Some(manifest) = dirty.iter().find(|path| is_input(path) || read(path)) {
             return Err(fail(format!(
                 "`{manifest}` may have uncommitted changes, so the workspace may differ from HEAD"
             )));
