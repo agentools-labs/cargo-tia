@@ -3581,6 +3581,25 @@ fn links_that_loop_select_the_whole_workspace_quickly() {
 
 #[cfg(unix)]
 #[test]
+fn committed_only_follows_a_link_removed_from_the_index() {
+    let repo = chain();
+    std::os::unix::fs::symlink(
+        "../../core/src/lib.rs",
+        repo.path("crates/lonely/src/shared.rs"),
+    )
+    .unwrap();
+    repo.commit("link");
+    repo.append("crates/core/src/lib.rs", "// changed\n");
+    repo.commit("change core");
+    // The link stays on disk as in HEAD.
+    repo.git(&["rm", "-q", "--cached", "crates/lonely/src/shared.rs"]);
+    let json = repo.select("HEAD^", &["--committed"]);
+    assert!(!is_full(&json), "{json:#}");
+    assert!(selected(&json).contains(&"lonely".to_string()), "{json:#}");
+}
+
+#[cfg(unix)]
+#[test]
 fn a_link_removed_from_the_index_still_reaches_its_target() {
     let repo = chain();
     std::os::unix::fs::symlink(

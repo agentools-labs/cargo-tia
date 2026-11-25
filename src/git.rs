@@ -271,6 +271,16 @@ pub fn changed_files(
             .iter()
             .filter(|path| dirty.contains(path) && !differs(&toplevel, "HEAD", path))
             .collect();
+        // Such a file can be a link that a package reads through: it still reaches its target.
+        untracked_links.extend(
+            unindexed
+                .iter()
+                .filter(|path| {
+                    std::fs::symlink_metadata(toplevel.join(path))
+                        .is_ok_and(|metadata| metadata.is_symlink())
+                })
+                .map(|path| path.to_string()),
+        );
         let differing = dirty
             .iter()
             .chain(&new_files)
