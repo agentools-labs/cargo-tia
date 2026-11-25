@@ -1227,6 +1227,107 @@ fn file_system_monitor_hooks_do_not_run() {
     assert!(!marker.exists(), "the fsmonitor hook ran");
 }
 
+/// Writes a non-member crate at `dir` with path dependencies on the given directories.
+fn vendor_crate(repo: &Repo, dir: &str, deps: &[&str]) {
+    let name = dir.rsplit('/').next().unwrap();
+    let mut manifest = format!(
+        "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n"
+    );
+    for dep in deps {
+        let dep_name = dep.rsplit('/').next().unwrap();
+        manifest += &format!("{dep_name} = {{ path = \"{dep}\" }}\n");
+    }
+    repo.write(&format!("{dir}/Cargo.toml"), &manifest);
+    repo.write(&format!("{dir}/src/lib.rs"), "pub fn v() {}\n");
+}
+
+fn use_vendor_crate(repo: &Repo, member: &str, name: &str) {
+    let path = format!("crates/{member}/Cargo.toml");
+    let manifest = fs::read_to_string(repo.path(&path)).unwrap();
+    repo.write(
+        &path,
+        &manifest.replace(
+            "[dependencies]\n",
+            &format!("[dependencies]\n{name} = {{ path = \"../../vendor/{name}\" }}\n"),
+        ),
+    );
+}
+
+#[test]
+fn shared_nested_path_dependency_selects_every_user() {
+    let repo = chain();
+    repo.append("Cargo.toml", "exclude = [\"vendor\"]\n");
+    vendor_crate(&repo, "vendor/common", &[]);
+    vendor_crate(&repo, "vendor/one", &["../common"]);
+    vendor_crate(&repo, "vendor/two", &["../common"]);
+    use_vendor_crate(&repo, "lonely", "one");
+    use_vendor_crate(&repo, "builder", "two");
+    repo.commit("vendored crates");
+    repo.append("vendor/common/src/lib.rs", "// changed\n");
+    assert_eq!(selected(&repo.select("HEAD", &[])), ["builder", "lonely"]);
+}
+
+#[test]
+fn cyclic_path_dependencies_terminate() {
+    let repo = chain();
+    repo.append("Cargo.toml", "exclude = [\"vendor\"]\n");
+    vendor_crate(&repo, "vendor/x", &["../y"]);
+    vendor_crate(&repo, "vendor/y", &["../x"]);
+    use_vendor_crate(&repo, "lonely", "x");
+    repo.commit("cycle");
+    repo.append("vendor/y/src/lib.rs", "// changed\n");
+    assert_eq!(selected(&repo.select("HEAD", &[])), ["lonely"]);
+}
+
+#[test]
+fn path_override_outside_the_repository_selects_the_whole_workspace() {
+    let outside = Repo::new("outside-override");
+    vendor_crate(&outside, "local-uuid", &[]);
+    let repo = chain();
+    repo.write(
+        ".cargo/config.toml",
+        &format!(
+            "paths = [{:?}]\n",
+            outside.path("local-uuid").display().to_string()
+        ),
+    );
+    repo.commit("paths override");
+    let json = repo.select("HEAD", &[]);
+    assert!(is_full(&json), "{json:#}");
+}
+
+#[test]
+fn target_outside_the_repository_selects_the_whole_workspace() {
+    let outside = Repo::new("outside-target");
+    outside.write("check.rs", "#[test] fn t() {}\n");
+    let repo = chain();
+    let app = fs::read_to_string(repo.path("crates/app/Cargo.toml")).unwrap();
+    repo.write(
+        "crates/app/Cargo.toml",
+        &format!(
+            "{app}\n[[test]]\nname = \"check\"\npath = {:?}\n",
+            outside.path("check.rs").display().to_string()
+        ),
+    );
+    repo.commit("outside test");
+    repo.append("crates/lonely/src/lib.rs", "// changed\n");
+    let json = repo.select("HEAD", &[]);
+    assert!(is_full(&json), "{json:#}");
+    // The report keeps the changed files.
+    assert_eq!(json["changed_files"][0]["path"], "crates/lonely/src/lib.rs");
+}
+
+#[cfg(unix)]
+#[test]
+fn link_to_the_workspace_root_reaches_every_file() {
+    let repo = chain();
+    std::os::unix::fs::symlink("../../..", repo.path("crates/app/src/everything")).unwrap();
+    repo.commit("root link");
+    repo.append("crates/lonely/src/lib.rs", "// changed\n");
+    let json = repo.select("HEAD", &[]);
+    assert_eq!(selected(&json), ["app", "lonely"], "{json:#}");
+}
+
 /// A small deterministic generator, so the property test needs no extra crate.
 struct Rng(u64);
 

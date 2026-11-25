@@ -1,7 +1,7 @@
 //! The workspace model, read from `cargo metadata --no-deps`.
 
 use serde_json::Value;
-use std::collections::btree_map::{BTreeMap, Entry};
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
@@ -174,9 +174,19 @@ fn follow_path_dependencies(workspace: &mut Workspace) {
             if workspace.packages.iter().any(|package| package.dir == dir) {
                 continue; // a member: its users already depend on every member
             }
-            if let Entry::Vacant(slot) = found.entry(dir.clone()) {
-                slot.insert(users.clone());
-                queue.push((dir, users.clone()));
+            // Two path dependencies can share one: merge their users, and visit it again
+            // when its users grow.
+            let is_new = !found.contains_key(&dir);
+            let known = found.entry(dir.clone()).or_default();
+            let before = known.len();
+            for user in &users {
+                if !known.contains(user) {
+                    known.push(*user);
+                }
+            }
+            if is_new || known.len() > before {
+                known.sort_unstable();
+                queue.push((dir, known.clone()));
             }
         }
     }
@@ -214,7 +224,11 @@ fn patches(workspace: &Workspace) -> (Vec<usize>, Vec<String>) {
         let Ok(text) = std::fs::read_to_string(&file) else {
             continue;
         };
-        for path in patch_paths(&text) {
+        let mut paths = patch_paths(&text);
+        if !file.ends_with("Cargo.toml") {
+            paths.extend(override_paths(&text));
+        }
+        for path in paths {
             let dir = relative(root, &normalize(&base.join(path)));
             match workspace.packages.iter().position(|p| p.dir == dir) {
                 Some(index) => patched.push(index),
@@ -248,6 +262,41 @@ fn patch_paths(text: &str) -> Vec<String> {
             in_table = is_patch;
         } else if in_table || is_patch {
             paths.extend(line_values(line, "path"));
+        }
+    }
+    paths
+}
+
+/// The quoted strings of a top-level `paths = [...]` array in a Cargo configuration file. These
+/// local crates override registry dependencies of the same name.
+fn override_paths(text: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+    let mut in_array = false;
+    for line in text.lines() {
+        let line = line.split(" #").next().unwrap_or_default().trim();
+        if line.starts_with('#') {
+            continue;
+        }
+        let mut rest = line;
+        if !in_array {
+            let Some(after) = line.strip_prefix("paths") else {
+                continue;
+            };
+            let Some(after) = after.trim_start().strip_prefix('=') else {
+                continue;
+            };
+            in_array = true;
+            rest = after;
+        }
+        let end = rest.find(']');
+        let inside = end.map_or(rest, |end| &rest[..end]);
+        for (index, part) in inside.split(['"', '\'']).enumerate() {
+            if index % 2 == 1 {
+                paths.push(part.to_string());
+            }
+        }
+        if end.is_some() {
+            in_array = false;
         }
     }
     paths
@@ -583,6 +632,19 @@ mod tests {
             ws.cross_targets,
             [("crates/helper/tests".to_string(), "root".to_string())]
         );
+    }
+
+    #[test]
+    fn reads_override_paths() {
+        assert_eq!(
+            override_paths("paths = [\"../a\", '../b']"),
+            ["../a", "../b"]
+        );
+        assert_eq!(
+            override_paths("[build]\njobs = 2\n\npaths = [\n  \"../c\", # one\n  \"../d\",\n]\n"),
+            ["../c", "../d"]
+        );
+        assert!(override_paths("# paths = [\"../e\"]\nsearch-paths = 1").is_empty());
     }
 
     #[test]

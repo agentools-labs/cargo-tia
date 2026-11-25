@@ -233,28 +233,32 @@ fn main() -> ExitCode {
     let (base, selection) =
         match git::changed_files(&workspace.root, options.base.as_deref(), options.committed) {
             Ok(changes) => {
-                // Git cannot see changes in a path dependency outside the repository.
+                let mut selection = select::select(
+                    &workspace,
+                    &options.rules,
+                    &changes.files,
+                    &changes.symlinks,
+                    &changes.special,
+                );
+                // Git cannot see changes outside the repository: in path dependencies, or in
+                // targets and build scripts declared there.
                 let repository = workspace::normalize(&workspace.root.join(&changes.repository));
-                let outside = workspace.foreign.iter().find(|(dir, _)| {
-                    !workspace::normalize(&workspace.root.join(dir)).starts_with(&repository)
-                });
-                let selection = match outside {
-                    Some((dir, _)) => Selection::full(
-                        &workspace,
-                        format!("path dependency `{dir}` is outside the git repository"),
-                    ),
-                    None if config_override(&options) => Selection::full(
-                        &workspace,
-                        "`--config` after `--` can change the build".to_string(),
-                    ),
-                    None => select::select(
-                        &workspace,
-                        &options.rules,
-                        &changes.files,
-                        &changes.symlinks,
-                        &changes.special,
-                    ),
-                };
+                let inputs = workspace
+                    .foreign
+                    .iter()
+                    .map(|(dir, _)| dir)
+                    .chain(workspace.targets.iter().map(|(src, _)| src))
+                    .chain(&workspace.build_scripts);
+                for input in inputs {
+                    if !workspace::normalize(&workspace.root.join(input)).starts_with(&repository) {
+                        let reason = format!("`{input}` is outside the git repository");
+                        selection.make_full(&workspace, reason);
+                    }
+                }
+                if config_override(&options) {
+                    let reason = "`--config` after `--` can change the build".to_string();
+                    selection.make_full(&workspace, reason);
+                }
                 (Base::Known(changes.base, changes.merge_base), selection)
             }
             Err(unknown) => {

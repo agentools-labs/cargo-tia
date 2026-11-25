@@ -110,13 +110,15 @@ def main():
             rows.append(row)
             print(json.dumps(row), flush=True)
     finally:
-        with open(out, "w") as handle:
-            json.dump(rows, handle, indent=2)
-        restore = ["git", "checkout", "-q", branch] if branch else [
-            "git", "checkout", "-q", "--detach", start_ref]
-        restored = run(restore, repo, check=False)
-        if restored.returncode != 0:
-            raise SystemExit(f"results saved, but cannot restore {repo}:\n{restored.stderr}")
+        try:
+            with open(out, "w") as handle:
+                json.dump(rows, handle, indent=2)
+        finally:
+            restore = ["git", "checkout", "-q", branch] if branch else [
+                "git", "checkout", "-q", "--detach", start_ref]
+            restored = run(restore, repo, check=False)
+            if restored.returncode != 0:
+                raise SystemExit(f"cannot restore {repo}:\n{restored.stderr}")
 
 
 if __name__ == "__main__":

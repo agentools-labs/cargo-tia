@@ -68,6 +68,14 @@ impl Selection {
         !self.full_reasons.is_empty()
     }
 
+    /// Makes this selection the full workspace for one more reason, and keeps the files.
+    pub fn make_full(&mut self, workspace: &Workspace, reason: String) {
+        self.full_reasons.push(reason);
+        self.packages = (0..workspace.packages.len())
+            .map(|index| (index, Reason::Full))
+            .collect();
+    }
+
     /// The full workspace, for a reason that is not a single file.
     pub fn full(workspace: &Workspace, reason: String) -> Self {
         Selection {
@@ -165,12 +173,23 @@ pub fn select(
         let mut next = Vec::new();
         for (path, origin) in &frontier {
             for (link, target) in symlinks {
-                let Some(rest) = path.strip_prefix(target.as_str()) else {
-                    continue;
+                // A link to the workspace root or above it reaches every file: the package that
+                // holds the link counts as changed.
+                let via = if target
+                    .split('/')
+                    .all(|part| part.is_empty() || part == "..")
+                {
+                    link.clone()
+                } else {
+                    let Some(rest) = path.strip_prefix(target.as_str()) else {
+                        continue;
+                    };
+                    if !(rest.is_empty() || rest.starts_with('/')) {
+                        continue;
+                    }
+                    format!("{link}{rest}")
                 };
-                let via = format!("{link}{rest}");
-                let new = (rest.is_empty() || rest.starts_with('/'))
-                    && !reached.iter().any(|(known, _)| *known == via);
+                let new = !reached.iter().any(|(known, _)| *known == via);
                 if new {
                     let origin = origin.clone().unwrap_or_else(|| path.clone());
                     reached.push((via.clone(), Some(origin.clone())));
@@ -577,6 +596,14 @@ mod tests {
             origins,
             ["crates/core/src/shared.rs", "crates/core/src/shared.rs"]
         );
+        // A link to the workspace root reaches every file.
+        let root_link = [("tools/tool/all".to_string(), String::new())];
+        let changed = files(&["crates/core/src/lib.rs"]);
+        let selection = select(&ws, &Rules::default(), &changed, &root_link, &[]);
+        assert_eq!(names(&ws, &selection), ["app", "core", "mid", "tool"]);
+        let parent_link = [("tools/tool/up".to_string(), "..".to_string())];
+        let selection = select(&ws, &Rules::default(), &changed, &parent_link, &[]);
+        assert_eq!(names(&ws, &selection), ["app", "core", "mid", "tool"]);
         // A directory link inside its own target ends after one round per link.
         let cycle = [("tools/tool/again".to_string(), "tools/tool".to_string())];
         let changed = files(&["tools/tool/x.rs"]);
