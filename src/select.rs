@@ -687,7 +687,7 @@ mod tests {
     }
 
     #[test]
-    fn with_a_patch_packages_with_registry_dependencies_depend_on_every_member() {
+    fn registry_users_depend_on_a_patched_member() {
         let mut ws = workspace();
         ws.packages[3].external = true; // tool
         let changed = files(&["crates/core/src/lib.rs"]);

@@ -94,6 +94,12 @@ def main():
             run(["git", "reset", "-q", "--hard"], repo)
             run(["git", "clean", "-fdxq"], repo)
             run(["git", "checkout", "-q", "--detach", commit], repo)
+            listing = run(["git", "ls-files", "-s"], repo).stdout.splitlines()
+            if any(line.startswith("160000 ") for line in listing):
+                row = {"commit": commit, "error": "submodules at this commit are not replayed"}
+                rows.append(row)
+                print(json.dumps(row), flush=True)
+                continue
             started = time.monotonic()
             listed = run(
                 [tia, "list", "--json", "--committed", "--base", f"{commit}^1"], repo,

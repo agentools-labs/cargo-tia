@@ -967,7 +967,7 @@ fn path_dependency_outside_the_repository_selects_the_whole_workspace() {
 }
 
 #[test]
-fn a_patch_makes_registry_users_depend_on_every_member() {
+fn registry_users_depend_on_a_patched_member() {
     let repo = chain();
     repo.append(
         "Cargo.toml",
@@ -2546,6 +2546,51 @@ fn links_inside_a_submodule_reach_their_targets() {
     repo.append("crates/mid/src/lib.rs", "// changed\n");
     let json = repo.select("HEAD", &[]);
     assert!(selected(&json).contains(&"lonely".to_string()), "{json:#}");
+}
+
+#[cfg(unix)]
+#[test]
+fn feature_and_target_arguments_need_the_selected_packages() {
+    let repo = chain();
+    fs::write(
+        repo.path(".git/info/exclude"),
+        "fake-cargo.sh\ncargo-calls.log\n",
+    )
+    .unwrap();
+    repo.write("crates/app/tests/smoke.rs", "#[test] fn t() {}\n");
+    repo.commit("smoke test in app");
+    let cargo = fake_cargo(&repo);
+    repo.append("crates/lonely/src/lib.rs", "// changed\n");
+    let run = |args: &[&str]| {
+        let output = isolated(Command::new(BIN))
+            .current_dir(&repo.dir)
+            .env("CARGO", &cargo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", stderr(&output));
+    };
+    // lonely has no `smoke` test; app has one but is not selected.
+    run(&["tia", "test", "--base", "HEAD", "--", "--test", "smoke"]);
+    run(&[
+        "tia",
+        "test",
+        "--base",
+        "HEAD",
+        "--",
+        "--features",
+        "app/extra",
+    ]);
+    run(&["tia", "test", "--base", "HEAD", "--", "--lib"]);
+    let calls = fs::read_to_string(repo.path("cargo-calls.log")).unwrap();
+    let lines: Vec<&str> = calls.lines().collect();
+    assert_eq!(lines[0], "test --workspace --test smoke");
+    assert_eq!(lines[1], "test --workspace --features app/extra");
+    assert!(
+        lines[2].starts_with("test --workspace --exclude"),
+        "{}",
+        lines[2]
+    );
 }
 
 /// A small deterministic generator, so the property test needs no extra crate.

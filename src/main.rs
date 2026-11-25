@@ -208,6 +208,57 @@ fn short_selection_flag(arg: &str) -> bool {
     false
 }
 
+/// Arguments for the test command that Cargo checks against the selected packages: features,
+/// and target names that only an unselected package has. With them, a partial selection is a
+/// Cargo error, so the full workspace runs.
+fn needs_workspace(
+    workspace: &Workspace,
+    selection: &Selection,
+    options: &Options,
+) -> Option<String> {
+    if selection.is_full() || selection.packages.is_empty() {
+        return None;
+    }
+    let args: Vec<String> = options
+        .passthrough
+        .iter()
+        .take_while(|arg| *arg != "--")
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    for (position, arg) in args.iter().enumerate() {
+        let (flag, inline) = match arg.split_once('=') {
+            Some((flag, value)) => (flag, Some(value.to_string())),
+            None => (arg.as_str(), None),
+        };
+        if flag == "--features" || arg.starts_with("-F") {
+            return Some(format!("`{arg}` after `--` names features of any package"));
+        }
+        let kind = match flag {
+            "--test" => "test",
+            "--bin" => "bin",
+            "--example" => "example",
+            "--bench" => "bench",
+            _ => continue,
+        };
+        // Without a value, the flag selects all targets of its kind.
+        let Some(name) = inline.or_else(|| args.get(position + 1).cloned()) else {
+            continue;
+        };
+        if name.starts_with('-') {
+            continue;
+        }
+        let selected = workspace.target_names.iter().any(|(k, n, package)| {
+            k == kind && *n == name && selection.packages.iter().any(|(index, _)| index == package)
+        });
+        if !selected {
+            return Some(format!(
+                "`--{kind} {name}` after `--` names a target of a package that is not selected"
+            ));
+        }
+    }
+    None
+}
+
 /// A configuration option for the test command can change settings for every package: Cargo's
 /// `--config`, and nextest's `--config-file` and `--tool-config-file`.
 fn config_override(options: &Options) -> bool {
@@ -292,6 +343,9 @@ fn main() -> ExitCode {
                 if config_override(&options) {
                     let reason =
                         "a configuration option after `--` can change every package".to_string();
+                    selection.make_full(&workspace, reason);
+                }
+                if let Some(reason) = needs_workspace(&workspace, &selection, &options) {
                     selection.make_full(&workspace, reason);
                 }
                 (Base::Known(changes.base, changes.merge_base), selection)

@@ -50,6 +50,8 @@ pub struct Workspace {
     pub build_scripts: Vec<String>,
     /// Target source files of the members, with the index of the member that declares each.
     pub targets: Vec<(String, usize)>,
+    /// Target names by kind (`test`, `bin`, `example`, `bench`), with the declaring member.
+    pub target_names: Vec<(String, String, usize)>,
     /// Directories that hold a target of a member that another package owns, with the
     /// declaring member's name.
     pub cross_targets: Vec<(String, String)>,
@@ -581,6 +583,13 @@ pub fn from_metadata(metadata: &Value) -> Result<Workspace, String> {
     for (index, package) in raw.iter().enumerate() {
         let is_root = workspace.packages[index].dir.is_empty();
         for target in package["targets"].as_array().into_iter().flatten() {
+            let name = target["name"].as_str().unwrap_or_default();
+            for kind in target["kind"].as_array().into_iter().flatten() {
+                if let Some(kind) = kind.as_str() {
+                    let names = &mut workspace.target_names;
+                    names.push((kind.to_string(), name.to_string(), index));
+                }
+            }
             let Some(src) = target["src_path"].as_str() else {
                 continue;
             };

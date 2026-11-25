@@ -68,7 +68,9 @@ Arguments after `--` go to the test command. They must not change the packages: 
 `-p` and `-m` (also in a group such as `-qp`), `--package`, `--workspace`, `--exclude` and
 `--manifest-path` there, and nextest's build-reuse options `--archive-file` and
 `--binaries-metadata`, which conflict with `--workspace`. A configuration option there (Cargo's `--config`, nextest's `--config-file` or
-`--tool-config-file`) can change every package, so it selects the full workspace.
+`--tool-config-file`) can change every package, so it selects the full workspace. So do `--features`
+(`-F`), and `--test`, `--bin`, `--example` or `--bench` with the name of a target that no selected
+package has: Cargo checks those against the selected packages.
 
 ## How it selects
 
