@@ -72,6 +72,9 @@ def main():
     select_count, timed_count = int(select_count), int(timed_count)
     if run(["git", "status", "--porcelain"], repo).stdout.strip():
         raise SystemExit(f"{repo} has uncommitted changes; use a clean clone")
+    # Checking out old commits would leave submodules at other revisions.
+    if any(line.startswith("160000 ") for line in run(["git", "ls-files", "-s"], repo).stdout.splitlines()):
+        raise SystemExit(f"{repo} has submodules, which this script does not replay")
     start_ref = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
     branch = run(["git", "symbolic-ref", "-q", "--short", "HEAD"], repo, check=False).stdout.strip()
     commits = run(

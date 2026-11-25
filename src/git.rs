@@ -352,7 +352,8 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
         .map_err(|error| format!("cannot run git: {error}"))?;
     // Git skips a directory that it cannot read with only a warning. The untracked files are
     // then unknown.
-    if output.status.success() && args.contains(&"--others") && !output.stderr.is_empty() {
+    let scans = args.contains(&"--others") || args.first() == Some(&"status");
+    if output.status.success() && scans && !output.stderr.is_empty() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
     if output.status.success() {

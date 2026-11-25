@@ -2409,13 +2409,78 @@ fn nested_submodule_changes_count() {
         "--recursive",
     ]);
     repo.commit("nested submodules");
-    // middle ignores dirty content of leaf, so only a recursive check sees this edit.
+    // leaf hides the edit in its own index, so the status of middle stays clean and only the
+    // recursive check of leaf sees it.
     let leaf_in_repo = Repo {
         dir: repo.path("crates/lonely/vendor/leaf"),
     };
+    leaf_in_repo.git(&["update-index", "--assume-unchanged", "lib.rs"]);
     leaf_in_repo.append("lib.rs", "// changed\n");
+    let middle_in_repo = Repo {
+        dir: repo.path("crates/lonely/vendor"),
+    };
+    let status = middle_in_repo.git(&["status", "--porcelain", "--ignore-submodules=none"]);
+    assert_eq!(status, "", "the middle status must look clean");
     let json = repo.select("HEAD", &[]);
     assert!(is_full(&json), "{json:#}");
+}
+
+#[cfg(unix)]
+#[test]
+fn unreadable_directories_inside_a_submodule_select_the_whole_workspace() {
+    use std::os::unix::fs::PermissionsExt;
+    let sub = Repo::new("sub-locked");
+    sub.write("data.txt", "1\n");
+    sub.commit("data");
+    let repo = chain();
+    repo.git(&[
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        sub.dir.to_str().unwrap(),
+        "crates/lonely/vendor",
+    ]);
+    repo.commit("submodule");
+    let locked = repo.path("crates/lonely/vendor/locked");
+    fs::create_dir_all(&locked).unwrap();
+    fs::write(locked.join("new.rs"), "// new\n").unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    let readable = fs::read_dir(&locked).is_ok(); // true when the tests run as root
+    let json = repo.select("HEAD", &[]);
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+    if !readable {
+        assert!(is_full(&json), "{json:#}");
+    }
+}
+
+#[test]
+fn configuration_comes_from_the_current_directory() {
+    let repo = Repo::new("monorepo");
+    repo.write_workspace("rust", &[("core", &[]), ("app", &[])]);
+    // Cargo does not read rust/.cargo/config.toml when it runs from the repository root.
+    let outside = Repo::new("outside-unused");
+    repo.write(
+        "rust/.cargo/config.toml",
+        &format!("paths = [{:?}]\n", outside.dir.display().to_string()),
+    );
+    repo.commit("initial");
+    repo.append("rust/crates/core/src/lib.rs", "pub fn g() {}\n");
+    let manifest = repo.path("rust/Cargo.toml");
+    let output = repo.tia_in(
+        &repo.dir,
+        &[
+            "list",
+            "--json",
+            "--base",
+            "HEAD",
+            "--manifest-path",
+            manifest.to_str().unwrap(),
+        ],
+    );
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(selected(&json), ["core"], "{json:#}");
 }
 
 /// A small deterministic generator, so the property test needs no extra crate.

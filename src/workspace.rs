@@ -336,13 +336,12 @@ fn overrides(workspace: &Workspace) -> Overrides {
     let root = &workspace.root;
     // Each file with the directory that its relative paths start from.
     let mut files = vec![(root.join("Cargo.toml"), root.clone())];
-    // Cargo reads configuration from the directory it runs in and its parents.
+    // Cargo reads configuration from the directory it runs in and its parents, not from the
+    // workspace root (they differ with --manifest-path).
     let cwd = std::env::current_dir().map(|cwd| normalize(&cwd)).ok();
-    for start in std::iter::once(root.as_path()).chain(cwd.as_deref()) {
-        for dir in start.ancestors() {
-            for name in [".cargo/config.toml", ".cargo/config"] {
-                files.push((dir.join(name), dir.to_path_buf()));
-            }
+    for dir in cwd.as_deref().unwrap_or(root).ancestors() {
+        for name in [".cargo/config.toml", ".cargo/config"] {
+            files.push((dir.join(name), dir.to_path_buf()));
         }
     }
     // Cargo resolves a relative CARGO_HOME from the directory it runs in.
