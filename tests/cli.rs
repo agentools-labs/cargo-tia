@@ -791,7 +791,11 @@ fn committed_only_needs_committed_manifests() {
     // Any other difference counts too; a clean working tree gives a partial selection.
     repo.git(&["checkout", "-q", "--", "."]);
     repo.write("notes.txt", "notes\n");
-    assert!(is_full(&repo.select("HEAD~1", &["--committed"])));
+    let json = repo.select("HEAD~1", &["--committed"]);
+    assert!(is_full(&json));
+    // The report keeps the committed change and the merge base.
+    assert_eq!(json["changed_files"][0]["path"], "crates/core/src/lib.rs");
+    assert!(json["merge_base"].is_string());
     fs::remove_file(repo.path("notes.txt")).unwrap();
     let json = repo.select("HEAD~1", &["--committed"]);
     assert_eq!(selected(&json), ["app", "builder", "core", "mid", "tester"]);

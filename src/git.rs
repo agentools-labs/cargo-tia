@@ -19,6 +19,9 @@ pub struct Changes {
     pub symlinks: Vec<(String, String)>,
     /// The repository root relative to the workspace root: empty, or `..` segments.
     pub repository: String,
+    /// Why the change set may be incomplete although git gave one: the caller selects the full
+    /// workspace and still reports the files.
+    pub uncertain: Option<String>,
 }
 
 /// Why the change set is unknown. The caller then selects the full workspace.
@@ -181,6 +184,7 @@ pub fn changed_files(
     }
 
     let (mut paths, mut special);
+    let mut uncertain = None;
     if committed_only {
         (paths, special) = diff(&[&merge_base, "HEAD"])?;
         // The tool reads the workspace, its configuration and links from the working tree, so
@@ -199,9 +203,9 @@ pub fn changed_files(
                     .cloned()
             });
         if let Some(path) = differing {
-            return Err(fail(format!(
+            uncertain = Some(format!(
                 "`{path}` differs from HEAD, and --committed needs a working tree that matches HEAD"
-            )));
+            ));
         }
     } else {
         (paths, special) = diff(&[&merge_base])?;
@@ -275,6 +279,7 @@ pub fn changed_files(
         special,
         symlinks,
         repository: relative(&root, &toplevel),
+        uncertain,
     })
 }
 

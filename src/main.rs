@@ -296,7 +296,8 @@ fn target_matches(pattern: &str, name: &str) -> bool {
         // Returns whether `c` matches and the length of the class, `[` to `]` included.
         let end = pattern.iter().skip(1).position(|&p| p == ']')? + 1;
         let (negated, body) = match pattern.get(1) {
-            Some('!') | Some('^') => (true, &pattern[2..end]),
+            // As in Cargo's glob syntax, only `!` negates; `^` is an ordinary member.
+            Some('!') => (true, &pattern[2..end]),
             _ => (false, &pattern[1..end]),
         };
         let mut found = false;
@@ -409,6 +410,9 @@ fn main() -> ExitCode {
                 for dir in &workspace.unresolved {
                     let reason = format!("cannot find the workspace that `{dir}` inherits from");
                     selection.make_full(&workspace, reason);
+                }
+                if let Some(reason) = &changes.uncertain {
+                    selection.make_full(&workspace, reason.clone());
                 }
                 if config_override(&options) {
                     let reason =
@@ -764,6 +768,8 @@ mod tests {
         assert!(target_matches("smoke[12]", "smoke1"));
         assert!(!target_matches("smoke[12]", "smoke3"));
         assert!(target_matches("smoke[!12]", "smoke3"));
+        assert!(!target_matches("smoke[^12]", "smoke3"));
+        assert!(target_matches("smoke[^12]", "smoke^"));
         assert!(target_matches("smoke[0-9]", "smoke7"));
         assert!(target_matches("t?st", "test"));
         assert!(!target_matches("smoke", "smoke_api"));

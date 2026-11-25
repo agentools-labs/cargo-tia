@@ -107,7 +107,12 @@ pub fn classify(workspace: &Workspace, rules: &Rules, path: &str) -> Effect {
             return Effect::FullRun(format!("matches full-run glob `{pattern}`"));
         }
     }
-    if workspace.build_scripts.iter().any(|script| script == path) {
+    // Case-insensitive: on such a file system Cargo opens a build script under any spelling.
+    if workspace
+        .build_scripts
+        .iter()
+        .any(|script| script.eq_ignore_ascii_case(path))
+    {
         return Effect::FullRun("is a build script".to_string());
     }
     if workspace.config_files.iter().any(|file| file == path) {
@@ -409,6 +414,7 @@ mod tests {
             "crates/app/fuzz/Cargo.lock",
             "crates/app/build.rs",
             "crates/core/gen.rs",
+            "crates/core/Gen.rs",
             "ci/run.sh",
         ] {
             let selection = select(&ws, &Rules::default(), &files(&[path]), &[], &[]);
