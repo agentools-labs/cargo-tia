@@ -3027,9 +3027,10 @@ fn a_member_at_a_target_discovery_directory() {
     repo.write("app/tests/smoke.rs", "#[test] fn t() {}\n");
     repo.write(
         "app/tests/Cargo.toml",
-        "[package]\nname = \"fixtures\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[lib]\npath = \"lib.rs\"\n",
+        "[package]\nname = \"fixtures\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
     );
-    repo.write("app/tests/lib.rs", "pub fn f() {}\n");
+    // Not tests/*.rs, so Cargo does not discover it as a test of app.
+    repo.write("app/tests/src/lib.rs", "pub fn f() {}\n");
     repo.commit("member at app/tests");
     fs::remove_file(repo.path("app/tests/smoke.rs")).unwrap();
     let json = repo.select("HEAD", &[]);
