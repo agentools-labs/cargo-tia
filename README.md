@@ -66,7 +66,8 @@ the run. `args` separates arguments with spaces, so for a manifest path that hol
 
 Arguments after `--` go to the test command. They must not change the packages: the tool rejects
 `-p` and `-m` (also in a group such as `-qp`), `--package`, `--workspace`, `--exclude` and
-`--manifest-path` there. A configuration option there (Cargo's `--config`, nextest's `--config-file` or
+`--manifest-path` there, and nextest's build-reuse options `--archive-file` and
+`--binaries-metadata`, which conflict with `--workspace`. A configuration option there (Cargo's `--config`, nextest's `--config-file` or
 `--tool-config-file`) can change every package, so it selects the full workspace.
 
 ## How it selects
@@ -135,8 +136,8 @@ These changes select the full workspace:
   of a path dependency. Git cannot see changes there.
 - A non-member path dependency that inherits dependencies from a workspace manifest that the tool
   cannot find.
-- With `--committed`: a `Cargo.toml` or a file in a `.cargo` directory with uncommitted changes, or
-  one that git hides with assume-unchanged or skip-worktree. The tool reads the workspace from the working tree, so the
+- With `--committed`: a `Cargo.toml`, a file in a `.cargo` directory or an included configuration file
+  with uncommitted changes, or one that git hides with assume-unchanged or skip-worktree. The tool reads the workspace from the working tree, so the
   working tree must match `HEAD` there.
 
 A dependency on a registry package with the same name as a member also counts as an edge to that
