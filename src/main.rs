@@ -270,8 +270,18 @@ fn main() -> ExitCode {
                 .chain(&workspace.build_scripts)
                 .chain(&workspace.foreign_files)
                 .chain(&workspace.source_dirs)
-                .chain(&workspace.config_files)
-                .chain(changes.symlinks.iter().map(|(_, target)| target));
+                .chain(changes.symlinks.iter().map(|(_, target)| target))
+                // An include from a configuration file in the repository. Configuration outside
+                // the repository, such as in CARGO_HOME, is environment.
+                .chain(
+                    workspace
+                        .config_includes
+                        .iter()
+                        .filter_map(|(included, from)| {
+                            let from = workspace::normalize(&workspace.root.join(from));
+                            from.starts_with(&repository).then_some(included)
+                        }),
+                );
             for input in inputs {
                 if !workspace::normalize(&workspace.root.join(input)).starts_with(&repository) {
                     let reason = format!("`{input}` is outside the git repository");

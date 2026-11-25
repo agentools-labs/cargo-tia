@@ -1979,6 +1979,73 @@ fn member_inside_a_root_build_script_directory() {
     assert_eq!(selected(&repo.select("HEAD", &[])), ["backend", "rootpkg"]);
 }
 
+#[test]
+fn root_build_script_modules_in_a_member() {
+    let repo = Repo::new("root-build-modules");
+    repo.write(
+        "Cargo.toml",
+        "[package]\nname = \"rootpkg\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\nmembers = [\"codegen\"]\n",
+    );
+    repo.write("src/lib.rs", "pub fn r() {}\n");
+    repo.write("build.rs", "mod codegen;\nfn main() {}\n");
+    repo.write(
+        "codegen/Cargo.toml",
+        "[package]\nname = \"codegen\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[lib]\npath = \"mod.rs\"\n",
+    );
+    repo.write("codegen/mod.rs", "pub fn c() {}\n");
+    repo.commit("root build script modules");
+    repo.append("codegen/mod.rs", "// changed\n");
+    assert_eq!(selected(&repo.select("HEAD", &[])), ["codegen", "rootpkg"]);
+}
+
+#[test]
+fn cargo_home_configuration_inside_the_repository_selects_the_whole_workspace() {
+    let repo = chain();
+    repo.write("crates/app/home/config.toml", "[env]\nX = \"1\"\n");
+    repo.commit("cargo home in the repository");
+    repo.write("crates/app/home/config.toml", "[env]\nX = \"2\"\n");
+    let output = isolated(Command::new(BIN))
+        .current_dir(&repo.dir)
+        .env("CARGO_HOME", repo.path("crates/app/home"))
+        .args(["list", "--json", "--base", "HEAD"])
+        .output()
+        .unwrap();
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(is_full(&json), "{json:#}");
+}
+
+#[cfg(unix)]
+#[test]
+fn committed_only_distrusts_the_file_behind_a_linked_config() {
+    let repo = chain();
+    repo.write("ci/cargo.toml", "[build]\njobs = 2\n");
+    std::fs::create_dir_all(repo.path(".cargo")).unwrap();
+    std::os::unix::fs::symlink("../ci/cargo.toml", repo.path(".cargo/config.toml")).unwrap();
+    repo.commit("linked config");
+    repo.append("crates/core/src/lib.rs", "pub fn g() {}\n");
+    repo.commit("core");
+    repo.write("ci/cargo.toml", "[build]\njobs = 4\n");
+    let json = repo.select("HEAD~1", &["--committed"]);
+    assert!(is_full(&json), "{json:#}");
+}
+
+#[test]
+fn includes_from_cargo_home_are_environment() {
+    let home = Repo::new("cargo-home-include");
+    home.write("config.toml", "include = [\"extra.toml\"]\n");
+    home.write("extra.toml", "[env]\nX = \"1\"\n");
+    let repo = chain();
+    repo.append("crates/lonely/src/lib.rs", "// changed\n");
+    let output = isolated(Command::new(BIN))
+        .current_dir(&repo.dir)
+        .env("CARGO_HOME", &home.dir)
+        .args(["list", "--json", "--base", "HEAD"])
+        .output()
+        .unwrap();
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(selected(&json), ["lonely"], "{json:#}");
+}
+
 /// A small deterministic generator, so the property test needs no extra crate.
 struct Rng(u64);
 

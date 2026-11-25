@@ -111,7 +111,7 @@ pub fn classify(workspace: &Workspace, rules: &Rules, path: &str) -> Effect {
         return Effect::FullRun("is a build script".to_string());
     }
     if workspace.config_files.iter().any(|file| file == path) {
-        return Effect::FullRun("is an included Cargo configuration file".to_string());
+        return Effect::FullRun("is a Cargo configuration file".to_string());
     }
     if workspace
         .source_dirs

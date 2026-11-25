@@ -37,8 +37,11 @@ pub struct Workspace {
     /// Source replacement directories (`directory` and `local-registry` in Cargo
     /// configuration). Registry packages from there can reach any member.
     pub source_dirs: Vec<String>,
-    /// Cargo configuration files that other configuration files include.
+    /// Cargo configuration files that the tool read, at the path Cargo uses and at the file it
+    /// resolves to. A change to one selects the full workspace.
     pub config_files: Vec<String>,
+    /// Included configuration files, each with the configuration file that includes it.
+    pub config_includes: Vec<(String, String)>,
     /// Non-member path dependencies whose inherited dependencies cannot be found.
     pub unresolved: Vec<String>,
     /// Build scripts of the members, relative to the workspace root.
@@ -89,10 +92,12 @@ pub fn load(cargo: &OsStr, manifest_path: Option<&Path>) -> Result<Workspace, St
         patched,
         others,
         sources,
+        config_files,
         includes,
     } = overrides(&workspace);
     workspace.source_dirs = sources;
-    workspace.config_files = includes;
+    workspace.config_files = config_files;
+    workspace.config_includes = includes;
     // A local patch that is not a member is a path dependency of every member that has a
     // registry or git dependency: one of those can resolve to it. It can also depend on any
     // member, so every member counts as patched.
@@ -133,9 +138,6 @@ pub fn load(cargo: &OsStr, manifest_path: Option<&Path>) -> Result<Workspace, St
 fn add_nested_users(workspace: &mut Workspace) {
     for (src, declarer) in &workspace.targets {
         let source_dir = src.rsplit_once('/').map_or("", |(dir, _)| dir);
-        if workspace.build_scripts.contains(src) && source_dir.is_empty() {
-            continue;
-        }
         for (dir, users) in &mut workspace.foreign {
             if contains(source_dir, dir) && !users.contains(declarer) {
                 users.push(*declarer);
@@ -313,8 +315,10 @@ struct Overrides {
     others: Vec<String>,
     /// Source replacement directories.
     sources: Vec<String>,
-    /// Included configuration files.
-    includes: Vec<String>,
+    /// Configuration files read, at both paths.
+    config_files: Vec<String>,
+    /// Included configuration files, with the file that includes each.
+    includes: Vec<(String, String)>,
 }
 
 /// Reads the workspace manifest and the Cargo configuration files that Cargo reads for this
@@ -342,7 +346,7 @@ fn overrides(workspace: &Workspace) -> Overrides {
         }
     }
     let (mut patched, mut others, mut sources) = (Vec::new(), Vec::new(), Vec::new());
-    let mut includes = Vec::new();
+    let (mut config_files, mut includes) = (Vec::new(), Vec::new());
     let mut seen = std::collections::BTreeSet::new();
     while let Some((file, base)) = files.pop() {
         if !seen.insert(file.clone()) {
@@ -351,6 +355,10 @@ fn overrides(workspace: &Workspace) -> Overrides {
         let Ok(text) = std::fs::read_to_string(&file) else {
             continue;
         };
+        if !file.ends_with("Cargo.toml") {
+            config_files.push(relative(root, &file));
+            config_files.push(relative(root, &normalize(&file)));
+        }
         let paths = patch_paths(&text);
         let mut recursive = Vec::new();
         if !file.ends_with("Cargo.toml") {
@@ -361,8 +369,7 @@ fn overrides(workspace: &Workspace) -> Overrides {
                 // Cargo resolves an include, and the paths in it, from where the include
                 // points, even when that is a symbolic link. Changes count at both places.
                 let included = lexical(&dir.join(include));
-                includes.push(relative(root, &included));
-                includes.push(relative(root, &normalize(&included)));
+                includes.push((relative(root, &included), relative(root, &file)));
                 // Relative paths in a configuration file start from the parent of its directory.
                 let included_base = included
                     .parent()
@@ -401,12 +408,15 @@ fn overrides(workspace: &Workspace) -> Overrides {
     others.dedup();
     sources.sort();
     sources.dedup();
+    config_files.sort();
+    config_files.dedup();
     includes.sort();
     includes.dedup();
     Overrides {
         patched,
         others,
         sources,
+        config_files,
         includes,
     }
 }
@@ -567,12 +577,10 @@ pub fn from_metadata(metadata: &Value) -> Result<Workspace, String> {
             if is_build_script {
                 workspace.build_scripts.push(src.clone());
             }
-            // A build script directly in the workspace root would hold every member: its
-            // module tree is skipped. Other targets count.
+            // Every target counts, build scripts too. A build script in the workspace root
+            // makes its package depend on every member: at worst that selects too much.
             let dir = src.rsplit_once('/').map_or("", |(dir, _)| dir);
-            if !(is_build_script && dir.is_empty()) {
-                source_dirs.push((dir.to_string(), index));
-            }
+            source_dirs.push((dir.to_string(), index));
             if is_root {
                 let entry = src.split('/').next().unwrap_or_default().to_string();
                 if !entry.is_empty() && !workspace.root_entries.contains(&entry) {
@@ -781,10 +789,11 @@ mod tests {
         assert_eq!(names, ["app", "core", "root"]);
         assert_eq!(ws.packages[0].dir, "crates/app");
         assert_eq!(ws.packages[2].dir, "");
-        // app -> core through a registry-style name match; root -> app through its path.
+        // app -> core through a registry-style name match; root -> app through its path, and
+        // root -> every member because its build script sits in the workspace root.
         assert_eq!(ws.packages[0].deps, [1]);
         assert_eq!(ws.packages[1].deps, Vec::<usize>::new());
-        assert_eq!(ws.packages[2].deps, [0]);
+        assert_eq!(ws.packages[2].deps, [0, 1]);
         assert_eq!(ws.foreign, [("vendor/vendored".to_string(), vec![1])]);
         assert_eq!(ws.build_scripts, ["build.rs", "crates/app/gen.rs"]);
         assert_eq!(ws.root_entries, ["build.rs", "src", "tests"]);
@@ -919,7 +928,7 @@ mod tests {
         };
         add_nested_users(&mut ws);
         assert_eq!(ws.foreign[0].1, [0, 1]);
-        // The build script's directory counts too, except for the root package.
+        // The build script's directory counts too.
         assert_eq!(ws.foreign[1].1, [0, 1]);
     }
 
