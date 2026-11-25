@@ -1745,6 +1745,50 @@ fn case_only_renames_count() {
     assert_eq!(selected(&repo.select("HEAD", &[])), ["lonely"]);
 }
 
+#[test]
+fn recursive_paths_override_covers_nested_members() {
+    let repo = chain();
+    // `paths = ["."]` overrides registry packages with every crate below the root.
+    repo.write(".cargo/config.toml", "paths = [\".\"]\n");
+    let manifest = fs::read_to_string(repo.path("crates/lonely/Cargo.toml")).unwrap();
+    repo.write(
+        "crates/lonely/Cargo.toml",
+        &manifest.replace("[dependencies]\n", "[dependencies]\nwrapper = \"1\"\n"),
+    );
+    repo.commit("paths override");
+    repo.append("crates/core/src/lib.rs", "pub fn g() {}\n");
+    assert!(selected(&repo.select("HEAD", &[])).contains(&"lonely".to_string()));
+}
+
+#[test]
+fn path_dependency_target_owned_by_another_path_dependency() {
+    let repo = chain();
+    repo.append("Cargo.toml", "exclude = [\"vendor\"]\n");
+    vendor_crate(&repo, "vendor/shared", &[]);
+    repo.write(
+        "vendor/shim/Cargo.toml",
+        "[package]\nname = \"shim\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\npath = \"../shared/src/lib.rs\"\n",
+    );
+    use_vendor_crate(&repo, "lonely", "shim");
+    use_vendor_crate(&repo, "builder", "shared");
+    repo.commit("shared library file");
+    repo.append("vendor/shared/src/lib.rs", "// changed\n");
+    let json = repo.select("HEAD", &[]);
+    assert!(is_full(&json), "shim compiles shared's file: {json:#}");
+}
+
+#[test]
+fn committed_only_distrusts_uncommitted_cargo_configuration() {
+    let repo = chain();
+    repo.write(".cargo/config.toml", "[build]\njobs = 2\n");
+    repo.commit("config");
+    repo.append("crates/core/src/lib.rs", "pub fn g() {}\n");
+    repo.commit("core");
+    repo.write(".cargo/config.toml", "[build]\njobs = 4\n");
+    let json = repo.select("HEAD~1", &["--committed"]);
+    assert!(is_full(&json), "{json:#}");
+}
+
 /// A small deterministic generator, so the property test needs no extra crate.
 struct Rng(u64);
 

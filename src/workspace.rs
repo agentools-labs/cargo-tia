@@ -32,6 +32,8 @@ pub struct Workspace {
     pub foreign: Vec<(String, Vec<usize>)>,
     /// Files that the manifests of non-member path dependencies name, such as `[lib] path`.
     pub foreign_files: Vec<String>,
+    /// Directories of such files outside the dependency's own directory, with that directory.
+    pub foreign_targets: Vec<(String, String)>,
     /// Source replacement directories (`directory` and `local-registry` in Cargo
     /// configuration). Registry packages from there can reach any member.
     pub source_dirs: Vec<String>,
@@ -161,7 +163,7 @@ impl Workspace {
 /// Records the directories of targets that the declaring member does not own, by the same
 /// rule that maps changed files. A change there must reach the declaring member too.
 fn mark_cross_targets(workspace: &mut Workspace) {
-    let mut cross = Vec::new();
+    let mut cross = workspace.foreign_targets.clone();
     for (src, declarer) in &workspace.targets {
         if workspace.owner(src) != Some(Owner::Member(*declarer)) {
             let parent = src.rsplit_once('/').map_or("", |(parent, _)| parent);
@@ -230,8 +232,16 @@ fn follow_path_dependencies(workspace: &mut Workspace) {
         for path in paths {
             let target = normalize(&path);
             if !target.is_dir() {
-                // A target path such as `src/lib.rs`: only its location matters.
-                workspace.foreign_files.push(relative(&root, &target));
+                // A target path such as `src/lib.rs`. Outside the dependency's own directory,
+                // another package owns it, so a change there selects the full workspace.
+                let file = relative(&root, &target);
+                if !contains(&dir, &file) {
+                    let parent = file.rsplit_once('/').map_or("", |(parent, _)| parent);
+                    workspace
+                        .foreign_targets
+                        .push((parent.to_string(), dir.clone()));
+                }
+                workspace.foreign_files.push(file);
                 continue;
             }
             let dir = relative(&root, &target);
@@ -323,9 +333,11 @@ fn overrides(workspace: &Workspace) -> Overrides {
         let Ok(text) = std::fs::read_to_string(&file) else {
             continue;
         };
-        let mut paths = patch_paths(&text);
+        let paths = patch_paths(&text);
+        let mut recursive = Vec::new();
         if !file.ends_with("Cargo.toml") {
-            paths.extend(key_strings(&text, "paths"));
+            // Cargo finds packages anywhere below a `paths` entry.
+            recursive = key_strings(&text, "paths");
             let dir = file.parent().unwrap_or(root).to_path_buf();
             for include in key_strings(&text, "include") {
                 let included = normalize(&dir.join(include));
@@ -349,6 +361,16 @@ fn overrides(workspace: &Workspace) -> Overrides {
             match workspace.packages.iter().position(|p| p.dir == dir) {
                 Some(index) => patched.push(index),
                 None => others.push(dir),
+            }
+        }
+        for path in recursive {
+            let dir = relative(root, &normalize(&base.join(path)));
+            patched.extend((0..workspace.packages.len()).filter(|&index| {
+                contains(&dir, &workspace.packages[index].dir)
+                    || workspace.packages[index].dir == dir
+            }));
+            if !workspace.packages.iter().any(|p| p.dir == dir) {
+                others.push(dir);
             }
         }
     }

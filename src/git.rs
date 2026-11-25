@@ -138,7 +138,11 @@ pub fn changed_files(
             hidden.then(|| path.to_string())
         })
         .collect();
-    let is_manifest = |path: &String| path.rsplit('/').next() == Some("Cargo.toml");
+    // The inputs that the tool reads from the working tree: manifests and Cargo configuration.
+    let is_input = |path: &String| {
+        path.rsplit('/').next() == Some("Cargo.toml")
+            || path.split('/').any(|part| part == ".cargo")
+    };
 
     let (mut paths, mut special);
     if committed_only {
@@ -147,7 +151,7 @@ pub fn changed_files(
         let (mut dirty, _) = diff(&["HEAD"])?;
         dirty.extend(untracked()?);
         dirty.extend(hidden.iter().cloned());
-        if let Some(manifest) = dirty.iter().find(|path| is_manifest(path)) {
+        if let Some(manifest) = dirty.iter().find(|path| is_input(path)) {
             return Err(fail(format!(
                 "`{manifest}` may have uncommitted changes, so the workspace may differ from HEAD"
             )));

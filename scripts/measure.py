@@ -34,7 +34,11 @@ def run(args, cwd, check=True):
 
 
 def failing_packages(stderr):
-    return sorted(set(re.findall(r"`-p (\S+?)(?:@\S+)? ", stderr)))
+    named = set(re.findall(r"`-p (\S+?)(?:@\S+)? ", stderr))
+    # In a workspace with one package, Cargo's hints name no package: "*" stands for it.
+    if not named and re.search(r"to rerun pass `--", stderr):
+        named.add("*")
+    return sorted(named)
 
 
 def compile_failures(stderr):
@@ -114,7 +118,8 @@ def main():
                 # Unknown when the full run is inconclusive: a compile failure can belong to a
                 # dependency that no selection contains.
                 row["missed_failures"] = None if full["inconclusive"] else [
-                    p for p in full["failing_packages"] if p not in selected
+                    p for p in full["failing_packages"]
+                    if p not in selected and not (p == "*" and selected)
                 ]
             rows.append(row)
             print(json.dumps(row), flush=True)
