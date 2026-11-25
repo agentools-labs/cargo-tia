@@ -491,7 +491,9 @@ fn main() -> ExitCode {
                 .passthrough
                 .iter()
                 .any(|arg| arg.to_string_lossy().starts_with("--no-tests"));
-            if options.mode == Mode::Nextest && !selection.is_full() && !policy {
+            let partial = selection.packages.len() < workspace.packages.len();
+            let policy = policy || std::env::var_os("NEXTEST_NO_TESTS").is_some();
+            if options.mode == Mode::Nextest && partial && !policy {
                 arguments.push("--no-tests=pass".to_string());
             }
             run(&cargo, subcommand, &arguments, &options.passthrough)

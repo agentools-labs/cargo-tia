@@ -118,10 +118,18 @@ pub fn classify(workspace: &Workspace, rules: &Rules, path: &str) -> Effect {
     {
         return Effect::FullRun("is a build script".to_string());
     }
-    if workspace.config_files.iter().any(|file| file == path) {
+    if workspace
+        .config_files
+        .iter()
+        .any(|file| file.eq_ignore_ascii_case(path))
+    {
         return Effect::FullRun("is a Cargo configuration file".to_string());
     }
-    if workspace.manifest_targets.iter().any(|file| file == path) {
+    if workspace
+        .manifest_targets
+        .iter()
+        .any(|file| file.eq_ignore_ascii_case(path))
+    {
         return Effect::FullRun("is a package manifest behind a symbolic link".to_string());
     }
     if workspace

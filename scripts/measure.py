@@ -102,7 +102,7 @@ def main():
             # A build or a test can rewrite tracked files or leave files behind. The clone is
             # disposable and the build output lives outside it.
             run(["git", "reset", "-q", "--hard"], repo)
-            run(["git", "clean", "-fdxq"], repo)
+            run(["git", "clean", "-ffdxq"], repo)
             run(["git", "checkout", "-q", "--detach", commit], repo)
             listing = run(["git", "ls-files", "-s"], repo).stdout.splitlines()
             if any(line.startswith("160000 ") for line in listing):
@@ -138,7 +138,7 @@ def main():
                 row["build_ok"] = build.returncode == 0
                 # Tests can write files: reset the clone before each run.
                 clean = lambda: (run(["git", "reset", "-q", "--hard"], repo),
-                                 run(["git", "clean", "-fdxq"], repo))
+                                 run(["git", "clean", "-ffdxq"], repo))
                 clean()
                 cargo_test(["--workspace"], repo)  # warm-up, untimed
                 clean()
@@ -161,7 +161,7 @@ def main():
             print(json.dumps(row), flush=True)
     finally:
         run(["git", "reset", "-q", "--hard"], repo, check=False)
-        run(["git", "clean", "-fdxq"], repo, check=False)
+        run(["git", "clean", "-ffdxq"], repo, check=False)
         # Restore first: the report can be a file inside the clone.
         restore = ["git", "checkout", "-q", branch] if branch else [
             "git", "checkout", "-q", "--detach", start_ref]

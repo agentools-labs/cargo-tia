@@ -708,8 +708,7 @@ pub fn from_metadata(metadata: &Value) -> Result<Workspace, String> {
     for (source_dir, declarer) in &source_dirs {
         for (member, package) in workspace.packages.iter().enumerate() {
             if member != *declarer
-                && package.dir != *source_dir
-                && contains(source_dir, &package.dir)
+                && (package.dir == *source_dir || contains(source_dir, &package.dir))
             {
                 nested.push((*declarer, member));
             }

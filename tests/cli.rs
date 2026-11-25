@@ -3012,6 +3012,67 @@ fn a_merge_base_with_a_warning_selects_the_whole_workspace() {
     assert!(is_full(&json), "{json:#}");
 }
 
+#[test]
+fn a_member_at_a_target_discovery_directory() {
+    let repo = Repo::new("tests-member");
+    repo.write(
+        "Cargo.toml",
+        "[workspace]\nresolver = \"2\"\nmembers = [\"app\", \"app/tests\"]\n",
+    );
+    repo.write(
+        "app/Cargo.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    repo.write("app/src/lib.rs", "pub fn a() {}\n");
+    repo.write("app/tests/smoke.rs", "#[test] fn t() {}\n");
+    repo.write(
+        "app/tests/Cargo.toml",
+        "[package]\nname = \"fixtures\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[lib]\npath = \"lib.rs\"\n",
+    );
+    repo.write("app/tests/lib.rs", "pub fn f() {}\n");
+    repo.commit("member at app/tests");
+    fs::remove_file(repo.path("app/tests/smoke.rs")).unwrap();
+    let json = repo.select("HEAD", &[]);
+    assert!(selected(&json).contains(&"app".to_string()), "{json:#}");
+}
+
+#[cfg(unix)]
+#[test]
+fn nextest_keeps_its_no_tests_policy_for_a_whole_workspace() {
+    let repo = chain();
+    fs::write(
+        repo.path(".git/info/exclude"),
+        "fake-cargo.sh\ncargo-calls.log\n",
+    )
+    .unwrap();
+    let cargo = fake_cargo(&repo);
+    let run = |args: &[&str], env: Option<(&str, &str)>| {
+        let mut command = isolated(Command::new(BIN));
+        command
+            .current_dir(&repo.dir)
+            .env("CARGO", &cargo)
+            .args(args);
+        if let Some((key, value)) = env {
+            command.env(key, value);
+        }
+        assert!(command.output().unwrap().status.success());
+    };
+    // Every package selected through dependents, without a fallback rule: no policy added.
+    repo.append("crates/core/src/lib.rs", "// changed\n");
+    repo.append("crates/lonely/src/lib.rs", "// changed\n");
+    run(&["tia", "nextest", "--base", "HEAD"], None);
+    // A partial selection with NEXTEST_NO_TESTS set: no policy added either.
+    repo.git(&["checkout", "-q", "--", "crates/core"]);
+    run(
+        &["tia", "nextest", "--base", "HEAD"],
+        Some(("NEXTEST_NO_TESTS", "fail")),
+    );
+    let calls = fs::read_to_string(repo.path("cargo-calls.log")).unwrap();
+    let lines: Vec<&str> = calls.lines().collect();
+    assert!(!lines[0].contains("--no-tests"), "{}", lines[0]);
+    assert!(!lines[1].contains("--no-tests"), "{}", lines[1]);
+}
+
 /// A small deterministic generator, so the property test needs no extra crate.
 struct Rng(u64);
 
