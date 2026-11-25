@@ -212,6 +212,8 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     let output = Command::new("git")
         .arg("-C")
         .arg(dir)
+        // A file system monitor hook can run any program and can report stale results.
+        .args(["-c", "core.fsmonitor=false"])
         .args(args)
         // A partial clone must not fetch missing objects: the command fails instead.
         // GIT_NO_LAZY_FETCH needs git 2.45; denying every transport covers older versions.

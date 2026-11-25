@@ -1122,6 +1122,111 @@ fn config_override_for_the_test_command_selects_the_whole_workspace() {
     );
 }
 
+#[test]
+fn local_patches_that_are_not_members() {
+    let repo = chain();
+    repo.write(
+        "vendor/widget/Cargo.toml",
+        "[package]\nname = \"widget\"\nversion = \"1.0.0\"\nedition = \"2021\"\n",
+    );
+    repo.write("vendor/widget/src/lib.rs", "pub fn w() {}\n");
+    repo.append(
+        "Cargo.toml",
+        "exclude = [\"vendor\"]\n\n[patch.crates-io]\nwidget = { path = \"vendor/widget\" }\n",
+    );
+    let manifest = fs::read_to_string(repo.path("crates/lonely/Cargo.toml")).unwrap();
+    repo.write(
+        "crates/lonely/Cargo.toml",
+        &manifest.replace(
+            "[dependencies]\n",
+            "[dependencies]\nregistry-user = \"1\"\n",
+        ),
+    );
+    repo.commit("patch to a local crate");
+    // A registry dependency of lonely can resolve to the patched widget.
+    repo.append("vendor/widget/src/lib.rs", "// changed\n");
+    let json = repo.select("HEAD", &[]);
+    assert!(!is_full(&json), "{json:#}");
+    assert_eq!(selected(&json), ["lonely"]);
+}
+
+#[test]
+fn local_patch_outside_the_repository_selects_the_whole_workspace() {
+    let outside = Repo::new("outside-patch");
+    outside.write(
+        "Cargo.toml",
+        "[package]\nname = \"widget\"\nversion = \"1.0.0\"\nedition = \"2021\"\n",
+    );
+    outside.write("src/lib.rs", "pub fn w() {}\n");
+    let repo = chain();
+    repo.append(
+        "Cargo.toml",
+        &format!(
+            "\n[patch.crates-io]\nwidget = {{ path = {:?} }}\n",
+            outside.dir.display().to_string()
+        ),
+    );
+    repo.commit("patch to a sibling checkout");
+    let json = repo.select("HEAD", &[]);
+    assert!(is_full(&json), "{json:#}");
+    assert!(json["full_reasons"][0]
+        .as_str()
+        .unwrap()
+        .contains("outside the git repository"));
+}
+
+#[test]
+fn member_test_inside_a_path_dependency_selects_the_whole_workspace() {
+    let repo = chain();
+    repo.write(
+        "crates/app/vendor/shim/Cargo.toml",
+        "[package]\nname = \"shim\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    repo.write("crates/app/vendor/shim/src/lib.rs", "pub fn s() {}\n");
+    repo.write(
+        "crates/app/vendor/shim/tests/smoke.rs",
+        "#[test] fn t() {}\n",
+    );
+    repo.append("Cargo.toml", "exclude = [\"crates/app/vendor\"]\n");
+    let app = fs::read_to_string(repo.path("crates/app/Cargo.toml")).unwrap();
+    repo.write(
+        "crates/app/Cargo.toml",
+        &(app + "\n[[test]]\nname = \"smoke\"\npath = \"vendor/shim/tests/smoke.rs\"\n"),
+    );
+    let lonely = fs::read_to_string(repo.path("crates/lonely/Cargo.toml")).unwrap();
+    repo.write(
+        "crates/lonely/Cargo.toml",
+        &lonely.replace(
+            "[dependencies]\n",
+            "[dependencies]\nshim = { path = \"../app/vendor/shim\" }\n",
+        ),
+    );
+    repo.commit("shared test");
+    // The shim owns the file, but app compiles it as a test.
+    repo.append("crates/app/vendor/shim/tests/smoke.rs", "// changed\n");
+    let json = repo.select("HEAD", &[]);
+    assert!(is_full(&json), "{json:#}");
+}
+
+#[cfg(unix)]
+#[test]
+fn file_system_monitor_hooks_do_not_run() {
+    use std::os::unix::fs::PermissionsExt;
+    let repo = chain();
+    let marker = repo.path("hook-ran");
+    let hook = repo.path(".git/fsmonitor-hook.sh");
+    fs::write(
+        &hook,
+        format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
+    )
+    .unwrap();
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    repo.git(&["config", "core.fsmonitor", hook.to_str().unwrap()]);
+    repo.append("crates/lonely/src/lib.rs", "// changed\n");
+    assert_eq!(selected(&repo.select("HEAD", &[])), ["lonely"]);
+    assert!(!marker.exists(), "the fsmonitor hook ran");
+}
+
 /// A small deterministic generator, so the property test needs no extra crate.
 struct Rng(u64);
 

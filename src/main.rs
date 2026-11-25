@@ -166,7 +166,7 @@ fn parse(args: Vec<OsString>) -> Result<Parsed, String> {
         let selects = matches!(
             flag,
             "--package" | "--workspace" | "--all" | "--exclude" | "--manifest-path"
-        ) || short_package_flag(&arg);
+        ) || short_selection_flag(&arg);
         if selects {
             return Err(format!(
                 "`{arg}` after `--` would change the packages; pass --manifest-path before `--`"
@@ -176,9 +176,10 @@ fn parse(args: Vec<OsString>) -> Result<Parsed, String> {
     Ok(Parsed::Run(options))
 }
 
-/// True for a group of short flags that holds `-p`, such as `-p`, `-pfoo` or `-qp`. Letters
-/// after a flag that takes a value (`-j`, `-F`, `-Z`, `-C`) are that value.
-fn short_package_flag(arg: &str) -> bool {
+/// True for a group of short flags that holds `-p` (package) or `-m` (manifest path), such as
+/// `-p`, `-pfoo`, `-qp` or `-m`. Letters after a flag that takes a value (`-j`, `-F`, `-Z`,
+/// `-C`) are that value.
+fn short_selection_flag(arg: &str) -> bool {
     let Some(group) = arg
         .strip_prefix('-')
         .filter(|group| !group.starts_with('-'))
@@ -187,7 +188,7 @@ fn short_package_flag(arg: &str) -> bool {
     };
     for flag in group.chars() {
         match flag {
-            'p' => return true,
+            'p' | 'm' => return true,
             'j' | 'F' | 'Z' | 'C' => return false,
             _ => {}
         }
@@ -541,6 +542,8 @@ mod tests {
             &["test", "--", "--exclude", "x"],
             &["test", "--", "-qp", "x"],
             &["test", "--", "-vvp"],
+            &["test", "--", "-m", "../other/Cargo.toml"],
+            &["test", "--", "-qm../other/Cargo.toml"],
             &["test", "list"],
             &["--bogus"],
         ] {

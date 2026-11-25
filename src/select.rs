@@ -1,7 +1,7 @@
 //! Maps changed files to packages and selects their reverse dependency closure.
 
 use crate::glob;
-use crate::workspace::{contains, Workspace};
+use crate::workspace::{Owner, Workspace};
 use std::collections::VecDeque;
 
 /// Files whose change can affect every package. Globs are relative to the workspace root.
@@ -105,7 +105,7 @@ pub fn classify(workspace: &Workspace, rules: &Rules, path: &str) -> Effect {
     if let Some((_, package)) = workspace
         .cross_targets
         .iter()
-        .find(|(dir, _)| contains(dir, path))
+        .find(|(dir, _)| crate::workspace::contains(dir, path))
     {
         return Effect::FullRun(format!(
             "is next to a target of `{package}` outside that package"
@@ -118,29 +118,17 @@ pub fn classify(workspace: &Workspace, rules: &Rules, path: &str) -> Effect {
         }
     }
 
-    // The deepest package or path-dependency directory that holds the file owns it.
-    let package = workspace
-        .packages
-        .iter()
-        .enumerate()
-        .filter(|(_, package)| contains(&package.dir, path))
-        .max_by_key(|(_, package)| package.dir.len());
-    let foreign = workspace
-        .foreign
-        .iter()
-        .filter(|(dir, _)| contains(dir, path))
-        .max_by_key(|(dir, _)| dir.len());
-    if let Some((dir, users)) = foreign {
-        if package.is_none_or(|(_, package)| dir.len() > package.dir.len()) {
-            return Effect::PathDependency(users.clone());
-        }
-    }
-    match package {
+    match workspace.owner(path) {
         None => Effect::Outside,
-        Some((index, package)) if !package.dir.is_empty() => Effect::Package(index),
+        Some(Owner::PathDependency(index)) => {
+            Effect::PathDependency(workspace.foreign[index].1.clone())
+        }
+        Some(Owner::Member(index)) if !workspace.packages[index].dir.is_empty() => {
+            Effect::Package(index)
+        }
         // The root package shares its directory with the workspace: it owns only the
         // top-level entries that hold its targets.
-        Some((index, _)) => {
+        Some(Owner::Member(index)) => {
             let entry = path.split('/').next().unwrap_or_default();
             if workspace.root_entries.iter().any(|owned| owned == entry) {
                 Effect::Package(index)

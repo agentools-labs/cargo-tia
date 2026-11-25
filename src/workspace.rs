@@ -32,8 +32,10 @@ pub struct Workspace {
     pub foreign: Vec<(String, Vec<usize>)>,
     /// Build scripts of the members, relative to the workspace root.
     pub build_scripts: Vec<String>,
-    /// Directories that hold a target of a member outside that member's directory, with the
-    /// member's name.
+    /// Target source files of the members, with the index of the member that declares each.
+    pub targets: Vec<(String, usize)>,
+    /// Directories that hold a target of a member that another package owns, with the
+    /// declaring member's name.
     pub cross_targets: Vec<(String, String)>,
     /// Members that a `[patch]` or `[replace]` entry points to. Registry packages can then
     /// depend on them, and no-deps metadata does not show those edges. A patch path that is
@@ -72,9 +74,80 @@ pub fn load(cargo: &OsStr, manifest_path: Option<&Path>) -> Result<Workspace, St
     let metadata: Value = serde_json::from_slice(&output.stdout)
         .map_err(|error| format!("cannot parse `cargo metadata` output: {error}"))?;
     let mut workspace = from_metadata(&metadata)?;
+    let (patched, others) = patches(&workspace);
+    // A local patch that is not a member is a path dependency of every member that has a
+    // registry or git dependency: one of those can resolve to it. It can also depend on any
+    // member, so every member counts as patched.
+    if others.is_empty() {
+        workspace.patched = patched;
+    } else {
+        workspace.patched = (0..workspace.packages.len()).collect();
+        let users: Vec<usize> = (0..workspace.packages.len())
+            .filter(|&index| workspace.packages[index].external)
+            .collect();
+        let mut foreign: BTreeMap<String, Vec<usize>> = workspace.foreign.drain(..).collect();
+        for dir in others {
+            let entry = foreign.entry(dir).or_default();
+            entry.extend(&users);
+            entry.sort_unstable();
+            entry.dedup();
+        }
+        workspace.foreign = foreign.into_iter().collect();
+    }
     follow_path_dependencies(&mut workspace);
-    workspace.patched = patched_members(&workspace);
+    mark_cross_targets(&mut workspace);
     Ok(workspace)
+}
+
+/// Who owns a path: the deepest member, or non-member path dependency, whose directory holds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Owner {
+    Member(usize),
+    /// An index into `Workspace::foreign`.
+    PathDependency(usize),
+}
+
+impl Workspace {
+    /// The owner of a path relative to the workspace root. A path dependency wins over a
+    /// member only when its directory is deeper.
+    pub fn owner(&self, path: &str) -> Option<Owner> {
+        let member = self
+            .packages
+            .iter()
+            .enumerate()
+            .filter(|(_, package)| contains(&package.dir, path))
+            .max_by_key(|(_, package)| package.dir.len());
+        let foreign = self
+            .foreign
+            .iter()
+            .enumerate()
+            .filter(|(_, (dir, _))| contains(dir, path))
+            .max_by_key(|(_, (dir, _))| dir.len());
+        if let Some((index, (dir, _))) = foreign {
+            if member.is_none_or(|(_, package)| dir.len() > package.dir.len()) {
+                return Some(Owner::PathDependency(index));
+            }
+        }
+        member.map(|(index, _)| Owner::Member(index))
+    }
+}
+
+/// Records the directories of targets that the declaring member does not own, by the same
+/// rule that maps changed files. A change there must reach the declaring member too.
+fn mark_cross_targets(workspace: &mut Workspace) {
+    let mut cross = Vec::new();
+    for (src, declarer) in &workspace.targets {
+        if workspace.owner(src) != Some(Owner::Member(*declarer)) {
+            let parent = src.rsplit_once('/').map_or("", |(parent, _)| parent);
+            cross.push((
+                parent.to_string(),
+                workspace.packages[*declarer].name.clone(),
+            ));
+        }
+    }
+    cross.sort();
+    cross.dedup();
+    workspace.cross_targets = cross;
 }
 
 /// Adds the path dependencies of non-member path dependencies, found by reading their
@@ -112,9 +185,9 @@ fn follow_path_dependencies(workspace: &mut Workspace) {
     workspace.build_scripts.dedup();
 }
 
-/// The members that patch entries point to, from the workspace manifest and the Cargo
-/// configuration files that Cargo reads for this workspace.
-fn patched_members(workspace: &Workspace) -> Vec<usize> {
+/// The members that patch entries point to, and the other local patch directories, from the
+/// workspace manifest and the Cargo configuration files that Cargo reads for this workspace.
+fn patches(workspace: &Workspace) -> (Vec<usize>, Vec<String>) {
     let root = &workspace.root;
     // Each file with the directory that its relative paths start from.
     let mut files = vec![(root.join("Cargo.toml"), root.clone())];
@@ -136,7 +209,7 @@ fn patched_members(workspace: &Workspace) -> Vec<usize> {
             files.push((home.join(name), base.clone()));
         }
     }
-    let mut patched = Vec::new();
+    let (mut patched, mut others) = (Vec::new(), Vec::new());
     for (file, base) in files {
         let Ok(text) = std::fs::read_to_string(&file) else {
             continue;
@@ -145,13 +218,15 @@ fn patched_members(workspace: &Workspace) -> Vec<usize> {
             let dir = relative(root, &normalize(&base.join(path)));
             match workspace.packages.iter().position(|p| p.dir == dir) {
                 Some(index) => patched.push(index),
-                None => return (0..workspace.packages.len()).collect(),
+                None => others.push(dir),
             }
         }
     }
     patched.sort_unstable();
     patched.dedup();
-    patched
+    others.sort();
+    others.dedup();
+    (patched, others)
 }
 
 /// The `path` values of entries in `[patch...]` and `[replace]` tables and dotted `patch.` keys.
@@ -274,20 +349,7 @@ pub fn from_metadata(metadata: &Value) -> Result<Workspace, String> {
                     workspace.root_entries.push(entry);
                 }
             }
-            // A target in a directory that another package owns: a change there must reach
-            // both packages.
-            let owner = workspace
-                .packages
-                .iter()
-                .enumerate()
-                .filter(|(_, package)| contains(&package.dir, &src))
-                .max_by_key(|(_, package)| package.dir.len())
-                .map(|(owner, _)| owner);
-            if owner != Some(index) {
-                let parent = src.rsplit_once('/').map_or("", |(parent, _)| parent);
-                let name = workspace.packages[index].name.clone();
-                workspace.cross_targets.push((parent.to_string(), name));
-            }
+            workspace.targets.push((src, index));
         }
         let mut deps = Vec::new();
         for dependency in package["dependencies"].as_array().into_iter().flatten() {
@@ -325,8 +387,7 @@ pub fn from_metadata(metadata: &Value) -> Result<Workspace, String> {
     workspace.foreign = foreign.into_iter().collect();
     workspace.build_scripts.sort();
     workspace.root_entries.sort();
-    workspace.cross_targets.sort();
-    workspace.cross_targets.dedup();
+    mark_cross_targets(&mut workspace);
 
     let config = &metadata["metadata"]["tia"];
     workspace.full_run = string_list(config, "full-run")?;
