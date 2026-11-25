@@ -156,15 +156,23 @@ pub fn changed_files(
             let mut fields = meta.split(' ');
             let tag = fields.next().unwrap_or_default();
             let mode = fields.next().unwrap_or_default();
+            let object = fields.next().unwrap_or_default();
             let assume_unchanged = !tag.is_empty() && tag.chars().all(|c| c.is_ascii_lowercase());
             // A sparse checkout marks absent files skip-worktree. Only a present one can differ.
             let skip_worktree = tag.eq_ignore_ascii_case("s")
                 && (!sparse || std::fs::symlink_metadata(toplevel.join(path)).is_ok());
             let hidden = assume_unchanged || skip_worktree;
-            // A hidden link or submodule can change its target without git seeing it.
+            // A hidden link or submodule can change its target without git seeing it. A link
+            // that still points where the index says is unchanged.
             let link_now = std::fs::symlink_metadata(toplevel.join(path))
                 .is_ok_and(|metadata| metadata.is_symlink());
-            if hidden && (mode == "120000" || mode == "160000" || link_now) {
+            let same_link = mode == "120000"
+                && link_now
+                && std::fs::read_link(toplevel.join(path)).is_ok_and(|target| {
+                    git(toplevel.as_path(), &["cat-file", "blob", object])
+                        .is_ok_and(|stored| stored == target.to_string_lossy())
+                });
+            if hidden && !same_link && (mode == "120000" || mode == "160000" || link_now) {
                 hidden_links.push(path.to_string());
             }
             hidden.then(|| path.to_string())
@@ -370,6 +378,15 @@ fn differs(toplevel: &Path, revision: &str, path: &str) -> bool {
     // A file that became a link, or a link that became a file: hashing would follow the link.
     if metadata.is_symlink() != (mode == "120000") || mode == "160000" {
         return true;
+    }
+    // A link: git stores its target as the blob.
+    if mode == "120000" {
+        let stored = git(toplevel, &["cat-file", "blob", object]);
+        let target = std::fs::read_link(&file);
+        return match (stored, target) {
+            (Ok(stored), Ok(target)) => stored != target.to_string_lossy(),
+            _ => true,
+        };
     }
     let Ok(hash) = git(toplevel, &["hash-object", "--path", path, "--", path]) else {
         return true;

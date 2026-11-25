@@ -169,10 +169,11 @@ fn parse(args: Vec<OsString>) -> Result<Parsed, String> {
             "--package" | "--workspace" | "--all" | "--exclude" | "--manifest-path"
         ) || short_selection_flag(&arg);
         // Nextest's build reuse fixes the packages and conflicts with `--workspace`.
+        // A recorded rerun (`-R`, `--rerun`) has its own scope too.
         let reuses = matches!(
             flag,
-            "--archive-file" | "--binaries-metadata" | "--cargo-metadata"
-        );
+            "--archive-file" | "--binaries-metadata" | "--cargo-metadata" | "--rerun"
+        ) || short_flag(&arg, &['R']);
         if reuses {
             return Err(format!(
                 "`{arg}` after `--` reuses a build; run nextest directly for that"
@@ -313,6 +314,14 @@ fn with_target_spec(workspace: &Workspace, options: &Options) -> Rules {
         if file.is_file() || value.ends_with(".json") {
             let path = workspace::relative(&workspace.root, &workspace::normalize(&file));
             rules.full_run.push(path);
+        }
+        // A target name that rustc looks up as `<name>.json` in RUST_TARGET_PATH.
+        if let Some(search) = std::env::var_os("RUST_TARGET_PATH") {
+            for dir in std::env::split_paths(&search) {
+                let spec = cwd.join(dir).join(format!("{value}.json"));
+                let path = workspace::relative(&workspace.root, &workspace::normalize(&spec));
+                rules.full_run.push(path);
+            }
         }
     }
     rules
@@ -722,15 +731,8 @@ mod tests {
         assert_eq!(options.mode, Mode::List);
         let grouped = parse_ok(&["test", "--", "-qj2", "-Fparallel", "-v"]);
         assert_eq!(grouped.passthrough.len(), 3);
-        let filtered = parse_ok(&[
-            "nextest",
-            "--",
-            "-Etest(smoke)",
-            "-P=pre-merge",
-            "-Pci",
-            "-Rprevious.zip",
-        ]);
-        assert_eq!(filtered.passthrough.len(), 4);
+        let filtered = parse_ok(&["nextest", "--", "-Etest(smoke)", "-P=pre-merge", "-Pci"]);
+        assert_eq!(filtered.passthrough.len(), 3);
         let dashed = parse_ok(&["--ignore=-odd", "test", "--", "--release", "--", "-p"]);
         assert_eq!(dashed.rules.ignore, ["-odd"]);
         assert_eq!(dashed.passthrough.len(), 3);
@@ -762,6 +764,8 @@ mod tests {
             &["nextest", "--", "--archive-file", "tests.tar.zst"],
             &["nextest", "--", "--binaries-metadata=meta.json"],
             &["nextest", "--", "--cargo-metadata", "cached.json"],
+            &["nextest", "--", "-R", "latest"],
+            &["nextest", "--", "--rerun=latest"],
             &["test", "list"],
             &["--bogus"],
         ] {

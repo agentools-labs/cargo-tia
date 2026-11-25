@@ -1746,6 +1746,8 @@ fn hidden_symlink_changes_select_the_whole_workspace() {
         "--assume-unchanged",
         "crates/lonely/src/current.rs",
     ]);
+    // Unchanged, the hidden link is not a change.
+    assert!(selected(&repo.select("HEAD", &[])).is_empty());
     fs::remove_file(repo.path("crates/lonely/src/current.rs")).unwrap();
     std::os::unix::fs::symlink("v2.rs", repo.path("crates/lonely/src/current.rs")).unwrap();
     let json = repo.select("HEAD", &[]);
@@ -3072,6 +3074,34 @@ fn nextest_keeps_its_no_tests_policy_for_a_whole_workspace() {
     let lines: Vec<&str> = calls.lines().collect();
     assert!(!lines[0].contains("--no-tests"), "{}", lines[0]);
     assert!(!lines[1].contains("--no-tests"), "{}", lines[1]);
+}
+
+#[cfg(unix)]
+#[test]
+fn target_specifications_found_through_rust_target_path() {
+    let repo = chain();
+    repo.write("crates/lonely/targets/board.json", "{}\n");
+    repo.commit("board target");
+    repo.write(
+        "crates/lonely/targets/board.json",
+        "{ \"changed\": true }\n",
+    );
+    fs::write(
+        repo.path(".git/info/exclude"),
+        "fake-cargo.sh\ncargo-calls.log\n",
+    )
+    .unwrap();
+    let cargo = fake_cargo(&repo);
+    let output = isolated(Command::new(BIN))
+        .current_dir(&repo.dir)
+        .env("CARGO", &cargo)
+        .env("RUST_TARGET_PATH", repo.path("crates/lonely/targets"))
+        .args(["tia", "test", "--base", "HEAD", "--", "--target", "board"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    let calls = fs::read_to_string(repo.path("cargo-calls.log")).unwrap();
+    assert_eq!(calls, "test --workspace --target board\n");
 }
 
 /// A small deterministic generator, so the property test needs no extra crate.
