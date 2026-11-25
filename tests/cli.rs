@@ -1269,7 +1269,13 @@ fn shared_nested_path_dependency_selects_every_user() {
     assert_eq!(selected(&repo.select("HEAD", &[])), ["builder", "lonely"]);
     repo.git(&["checkout", "-q", "--", "."]);
     repo.append("vendor/base/src/lib.rs", "// changed\n");
-    assert_eq!(selected(&repo.select("HEAD", &[])), ["builder", "lonely"]);
+    let json = repo.select("HEAD", &[]);
+    assert_eq!(selected(&json), ["builder", "lonely"]);
+    // The report names every user of base, not only the first one found.
+    assert_eq!(
+        json["changed_files"][0]["packages"],
+        serde_json::json!(["builder", "lonely"])
+    );
 }
 
 #[test]
