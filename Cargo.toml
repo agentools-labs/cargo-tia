@@ -1,0 +1,13 @@
+[package]
+name = "cargo-tia"
+version = "0.1.0"
+edition = "2021"
+description = "Test impact analysis for Cargo workspaces: test only the packages a change can affect"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/agentools-labs/cargo-tia"
+readme = "README.md"
+keywords = ["cargo", "test", "ci", "workspace", "git"]
+categories = ["development-tools::cargo-plugins", "development-tools::testing"]
+
+[dependencies]
+serde_json = "1"

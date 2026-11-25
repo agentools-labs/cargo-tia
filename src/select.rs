@@ -1,0 +1,489 @@
+//! Maps changed files to packages and selects their reverse dependency closure.
+
+use crate::glob;
+use crate::workspace::Workspace;
+use std::collections::VecDeque;
+
+/// Files whose change can affect every package. Globs are relative to the workspace root.
+pub const FULL_RUN: &[&str] = &[
+    "Cargo.toml",
+    "Cargo.lock",
+    "**/rust-toolchain",
+    "**/rust-toolchain.toml",
+    "**/.cargo/config",
+    "**/.cargo/config.toml",
+    "**/build.rs",
+];
+
+/// What one changed file does to the selection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Effect {
+    /// The file matches a full-run glob or is a build script.
+    FullRun(String),
+    /// The file matches an ignore glob.
+    Ignored(String),
+    /// The file lies in this package.
+    Package(usize),
+    /// The file lies in a path dependency outside the workspace, used by these packages.
+    PathDependency(Vec<usize>),
+    /// The file lies in no package: workspace files, scripts, documents.
+    Outside,
+}
+
+/// Why a package is selected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reason {
+    /// The change set selects the whole workspace.
+    Full,
+    /// A file of the package, or of a path dependency it uses, changed.
+    Changed,
+    /// The package depends on this selected package.
+    DependsOn(usize),
+}
+
+/// The packages to test, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Selection {
+    /// Why the selection is the full workspace; empty when it is not.
+    pub full_reasons: Vec<String>,
+    /// Each changed file and its effect.
+    pub files: Vec<(String, Effect)>,
+    /// Selected package indices with their reasons, sorted by index (that is, by name).
+    pub packages: Vec<(usize, Reason)>,
+}
+
+impl Selection {
+    pub fn is_full(&self) -> bool {
+        !self.full_reasons.is_empty()
+    }
+
+    /// The full workspace, for a reason that is not a single file.
+    pub fn full(workspace: &Workspace, reason: String) -> Self {
+        Selection {
+            full_reasons: vec![reason],
+            files: Vec::new(),
+            packages: (0..workspace.packages.len())
+                .map(|index| (index, Reason::Full))
+                .collect(),
+        }
+    }
+}
+
+/// Extra globs given on the command line, added to those of the workspace.
+#[derive(Debug, Clone, Default)]
+pub struct Rules {
+    pub full_run: Vec<String>,
+    pub ignore: Vec<String>,
+}
+
+/// Decides what one changed file does. `path` is relative to the workspace root.
+pub fn classify(workspace: &Workspace, rules: &Rules, path: &str) -> Effect {
+    let full_run = FULL_RUN
+        .iter()
+        .copied()
+        .chain(workspace.full_run.iter().map(String::as_str))
+        .chain(rules.full_run.iter().map(String::as_str));
+    for pattern in full_run {
+        if glob::matches(pattern, path) {
+            return Effect::FullRun(format!("matches full-run glob `{pattern}`"));
+        }
+    }
+    if workspace.build_scripts.iter().any(|script| script == path) {
+        return Effect::FullRun("is a build script".to_string());
+    }
+    let ignore = workspace.ignore.iter().chain(&rules.ignore);
+    for pattern in ignore {
+        if glob::matches(pattern, path) {
+            return Effect::Ignored(pattern.clone());
+        }
+    }
+
+    // The deepest package or path-dependency directory that holds the file owns it.
+    let package = workspace
+        .packages
+        .iter()
+        .enumerate()
+        .filter(|(_, package)| contains(&package.dir, path))
+        .max_by_key(|(_, package)| package.dir.len());
+    let foreign = workspace
+        .foreign
+        .iter()
+        .filter(|(dir, _)| contains(dir, path))
+        .max_by_key(|(dir, _)| dir.len());
+    if let Some((dir, users)) = foreign {
+        if package.is_none_or(|(_, package)| dir.len() > package.dir.len()) {
+            return Effect::PathDependency(users.clone());
+        }
+    }
+    match package {
+        None => Effect::Outside,
+        Some((index, package)) if !package.dir.is_empty() => Effect::Package(index),
+        // The root package shares its directory with the workspace: it owns only the
+        // top-level entries that hold its targets.
+        Some((index, _)) => {
+            let entry = path.split('/').next().unwrap_or_default();
+            if workspace.root_entries.iter().any(|owned| owned == entry) {
+                Effect::Package(index)
+            } else {
+                Effect::Outside
+            }
+        }
+    }
+}
+
+fn contains(dir: &str, path: &str) -> bool {
+    if dir.is_empty() {
+        return !path.starts_with("../") && path != "..";
+    }
+    path.strip_prefix(dir)
+        .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// Selects the changed packages and every package that depends on them, directly or not.
+/// Any file that is a full-run file or lies outside every package selects the full workspace.
+pub fn select(workspace: &Workspace, rules: &Rules, files: &[String]) -> Selection {
+    let mut full_reasons = Vec::new();
+    let mut changed = Vec::new();
+    let mut classified = Vec::new();
+    for path in files {
+        let effect = classify(workspace, rules, path);
+        match &effect {
+            Effect::FullRun(why) => full_reasons.push(format!("`{path}` {why}")),
+            Effect::Outside => full_reasons.push(format!("`{path}` is outside every package")),
+            Effect::Package(index) => changed.push(*index),
+            Effect::PathDependency(users) => changed.extend(users),
+            Effect::Ignored(_) => {}
+        }
+        classified.push((path.clone(), effect));
+    }
+    if !full_reasons.is_empty() {
+        return Selection {
+            full_reasons,
+            files: classified,
+            packages: (0..workspace.packages.len())
+                .map(|index| (index, Reason::Full))
+                .collect(),
+        };
+    }
+    Selection {
+        full_reasons,
+        files: classified,
+        packages: dependents_closure(workspace, &changed),
+    }
+}
+
+/// Breadth-first walk from the changed packages over reverse dependency edges.
+fn dependents_closure(workspace: &Workspace, changed: &[usize]) -> Vec<(usize, Reason)> {
+    let count = workspace.packages.len();
+    let mut dependents = vec![Vec::new(); count];
+    for (index, package) in workspace.packages.iter().enumerate() {
+        for &dep in &package.deps {
+            dependents[dep].push(index);
+        }
+    }
+    let mut reason: Vec<Option<Reason>> = vec![None; count];
+    let mut queue = VecDeque::new();
+    for &index in changed {
+        if reason[index].is_none() {
+            reason[index] = Some(Reason::Changed);
+            queue.push_back(index);
+        }
+    }
+    while let Some(index) = queue.pop_front() {
+        for &dependent in &dependents[index] {
+            if reason[dependent].is_none() {
+                reason[dependent] = Some(Reason::DependsOn(index));
+                queue.push_back(dependent);
+            }
+        }
+    }
+    reason
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, reason)| reason.map(|reason| (index, reason)))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workspace::Package;
+
+    fn package(name: &str, dir: &str, deps: &[usize]) -> Package {
+        Package {
+            name: name.to_string(),
+            dir: dir.to_string(),
+            deps: deps.to_vec(),
+        }
+    }
+
+    /// core <- mid <- app; tool is independent; vendor/v is a path dependency of tool.
+    fn workspace() -> Workspace {
+        Workspace {
+            packages: vec![
+                package("app", "crates/app", &[2]),
+                package("core", "crates/core", &[]),
+                package("mid", "crates/mid", &[1]),
+                package("tool", "tools/tool", &[]),
+            ],
+            foreign: vec![("vendor/v".to_string(), vec![3])],
+            build_scripts: vec!["crates/core/gen.rs".to_string()],
+            full_run: vec!["ci/**".to_string()],
+            ignore: vec!["**/*.md".to_string()],
+            ..Workspace::default()
+        }
+    }
+
+    fn names(workspace: &Workspace, selection: &Selection) -> Vec<String> {
+        selection
+            .packages
+            .iter()
+            .map(|(index, _)| workspace.packages[*index].name.clone())
+            .collect()
+    }
+
+    fn files(paths: &[&str]) -> Vec<String> {
+        paths.iter().map(|p| p.to_string()).collect()
+    }
+
+    #[test]
+    fn selects_changed_package_and_transitive_dependents() {
+        let ws = workspace();
+        let selection = select(&ws, &Rules::default(), &files(&["crates/core/src/lib.rs"]));
+        assert!(!selection.is_full());
+        assert_eq!(names(&ws, &selection), ["app", "core", "mid"]);
+        assert_eq!(
+            selection.packages,
+            [
+                (0, Reason::DependsOn(2)),
+                (1, Reason::Changed),
+                (2, Reason::DependsOn(1))
+            ]
+        );
+    }
+
+    #[test]
+    fn leaf_change_selects_only_the_leaf() {
+        let ws = workspace();
+        let selection = select(&ws, &Rules::default(), &files(&["crates/app/tests/it.rs"]));
+        assert_eq!(names(&ws, &selection), ["app"]);
+    }
+
+    #[test]
+    fn no_changes_select_nothing() {
+        let ws = workspace();
+        let selection = select(&ws, &Rules::default(), &[]);
+        assert!(!selection.is_full());
+        assert!(selection.packages.is_empty());
+    }
+
+    #[test]
+    fn full_run_files_select_everything() {
+        let ws = workspace();
+        for path in [
+            "Cargo.toml",
+            "Cargo.lock",
+            "rust-toolchain.toml",
+            "rust-toolchain",
+            ".cargo/config.toml",
+            "crates/app/.cargo/config",
+            "crates/app/build.rs",
+            "crates/core/gen.rs",
+            "ci/run.sh",
+        ] {
+            let selection = select(&ws, &Rules::default(), &files(&[path]));
+            assert!(selection.is_full(), "{path}");
+            assert_eq!(selection.packages.len(), 4, "{path}");
+            assert!(selection.packages.iter().all(|(_, r)| *r == Reason::Full));
+        }
+    }
+
+    #[test]
+    fn files_outside_every_package_select_everything() {
+        let ws = workspace();
+        for path in [
+            "scripts/release.sh",
+            "crates/notes.txt",
+            "../outside/lib.rs",
+        ] {
+            let selection = select(&ws, &Rules::default(), &files(&[path]));
+            assert!(selection.is_full(), "{path}");
+            assert_eq!(selection.files[0].1, Effect::Outside);
+        }
+    }
+
+    #[test]
+    fn member_manifests_are_package_files() {
+        let ws = workspace();
+        let selection = select(&ws, &Rules::default(), &files(&["crates/mid/Cargo.toml"]));
+        assert_eq!(names(&ws, &selection), ["app", "mid"]);
+    }
+
+    #[test]
+    fn ignore_globs_drop_files_but_never_full_run_files() {
+        let ws = workspace();
+        let selection = select(&ws, &Rules::default(), &files(&["docs/guide.md"]));
+        assert!(!selection.is_full());
+        assert!(selection.packages.is_empty());
+        let rules = Rules {
+            ignore: vec!["**".to_string()],
+            ..Rules::default()
+        };
+        assert!(select(&ws, &rules, &files(&["Cargo.lock"])).is_full());
+        assert!(select(&ws, &rules, &files(&["scripts/x.sh"]))
+            .packages
+            .is_empty());
+    }
+
+    #[test]
+    fn command_line_full_run_globs_add_to_the_workspace_ones() {
+        let ws = workspace();
+        let rules = Rules {
+            full_run: vec!["fixtures/**".to_string()],
+            ..Rules::default()
+        };
+        assert!(select(&ws, &rules, &files(&["fixtures/a.json"])).is_full());
+    }
+
+    #[test]
+    fn path_dependency_changes_select_their_users() {
+        let ws = workspace();
+        let selection = select(&ws, &Rules::default(), &files(&["vendor/v/src/lib.rs"]));
+        assert_eq!(names(&ws, &selection), ["tool"]);
+    }
+
+    #[test]
+    fn deepest_directory_owns_a_file() {
+        let mut ws = workspace();
+        ws.packages
+            .push(package("nested", "crates/core/nested", &[]));
+        let selection = select(
+            &ws,
+            &Rules::default(),
+            &files(&["crates/core/nested/src/lib.rs"]),
+        );
+        assert_eq!(names(&ws, &selection), ["nested"]);
+        // A directory name that only shares a prefix does not own the file.
+        let selection = select(
+            &ws,
+            &Rules::default(),
+            &files(&["crates/core-extra/src/lib.rs"]),
+        );
+        assert!(selection.is_full());
+    }
+
+    #[test]
+    fn root_package_owns_only_its_target_entries() {
+        let mut ws = workspace();
+        ws.packages.push(package("root", "", &[0]));
+        ws.root_entries = vec!["src".to_string(), "tests".to_string()];
+        let root = ws.packages.len() - 1;
+        let selection = select(&ws, &Rules::default(), &files(&["src/main.rs"]));
+        assert_eq!(selection.packages, [(root, Reason::Changed)]);
+        let selection = select(&ws, &Rules::default(), &files(&["crates/core/src/lib.rs"]));
+        assert_eq!(names(&ws, &selection), ["app", "core", "mid", "root"]);
+        for path in ["README.txt", "crates/notes.txt", ".github/workflows/ci.yml"] {
+            assert!(
+                select(&ws, &Rules::default(), &files(&[path])).is_full(),
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn dev_dependency_cycles_terminate() {
+        let ws = Workspace {
+            packages: vec![package("a", "a", &[1]), package("b", "b", &[0])],
+            ..Workspace::default()
+        };
+        let selection = select(&ws, &Rules::default(), &files(&["a/src/lib.rs"]));
+        assert_eq!(
+            selection.packages,
+            [(0, Reason::Changed), (1, Reason::DependsOn(0))]
+        );
+    }
+
+    /// A small deterministic generator, so the property test needs no extra crate.
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+    }
+
+    #[test]
+    fn property_selection_is_exactly_the_dependents_closure() {
+        let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+        for case in 0..2000 {
+            let count = 1 + rng.below(12);
+            let packages: Vec<Package> = (0..count)
+                .map(|i| {
+                    // Any edge is allowed: dev-dependencies can form cycles.
+                    let deps: Vec<usize> = (0..count)
+                        .filter(|&j| j != i && rng.below(4) == 0)
+                        .collect();
+                    package(&format!("p{i:02}"), &format!("crates/p{i:02}"), &deps)
+                })
+                .collect();
+            let ws = Workspace {
+                packages,
+                ..Workspace::default()
+            };
+            let changed: Vec<usize> = (0..rng.below(4)).map(|_| rng.below(count)).collect();
+            let paths: Vec<String> = changed
+                .iter()
+                .map(|&i| format!("crates/p{i:02}/src/f{}.rs", rng.below(3)))
+                .collect();
+            let selection = select(&ws, &Rules::default(), &paths);
+            assert!(!selection.is_full(), "case {case}");
+            let selected: Vec<bool> = (0..count)
+                .map(|i| selection.packages.iter().any(|(j, _)| *j == i))
+                .collect();
+
+            // Every changed package is selected.
+            for &i in &changed {
+                assert!(selected[i], "case {case}: changed p{i:02} missing");
+            }
+            // Never misses a dependent: the selection is closed under reverse edges.
+            for (i, package) in ws.packages.iter().enumerate() {
+                for &dep in &package.deps {
+                    assert!(
+                        !selected[dep] || selected[i],
+                        "case {case}: p{i:02} depends on selected p{dep:02}"
+                    );
+                }
+            }
+            // Selects nothing else: each selected package reaches a changed one over forward edges.
+            for i in (0..count).filter(|&i| selected[i]) {
+                let mut seen = vec![false; count];
+                let mut stack = vec![i];
+                let mut reaches = false;
+                while let Some(k) = stack.pop() {
+                    if std::mem::replace(&mut seen[k], true) {
+                        continue;
+                    }
+                    reaches |= changed.contains(&k);
+                    stack.extend(&ws.packages[k].deps);
+                }
+                assert!(reaches, "case {case}: p{i:02} selected without a reason");
+            }
+            // Each `DependsOn` names a selected package that the dependent really depends on.
+            for (i, reason) in &selection.packages {
+                if let Reason::DependsOn(dep) = reason {
+                    assert!(
+                        selected[*dep] && ws.packages[*i].deps.contains(dep),
+                        "case {case}"
+                    );
+                }
+            }
+        }
+    }
+}
