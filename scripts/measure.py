@@ -16,6 +16,7 @@ the commit inconclusive.
 Run it in a clean, disposable clone: it checks out each commit (detached) and then returns to
 the starting branch or commit. Set CARGO_TARGET_DIR to a directory outside the clone: the
 script keeps the build output there, intermediate files (CARGO_BUILD_BUILD_DIR) included.
+CARGO_TIA and OUT_JSON must be outside the clone too.
 """
 
 import json
@@ -96,7 +97,8 @@ def build_phase(stderr):
 
 
 def compile_failures(stderr):
-    return sorted(set(re.findall(r"could not compile `([^`]+)`", build_phase(stderr))))
+    # Cargo's own error lines only: a warning, from a build script say, can quote the words.
+    return sorted(set(re.findall(r"^error: could not compile `([^`]+)`", build_phase(stderr), re.M)))
 
 
 def build_lockfiles(top):
@@ -162,6 +164,9 @@ def main():
     target_dir = os.environ.get("CARGO_TARGET_DIR", "")
     if not target_dir or inside(target_dir):
         raise SystemExit("set CARGO_TARGET_DIR to a directory outside the measured clone")
+    # A report in the clone would make the clone unclean for the next run.
+    if inside(out):
+        raise SystemExit("write OUT_JSON outside the measured clone")
     # Cargo runs inside the clone: a relative path would point into it.
     # The resolved path: a link inside the clone would be cleaned away with it.
     os.environ["CARGO_TARGET_DIR"] = os.path.realpath(target_dir)
@@ -283,12 +288,10 @@ def main():
     finally:
         run(["git", "reset", "-q", "--hard"], top, check=False)
         run(["git", "clean", "-ffdxq"], top, check=False)
-        # Restore first: the report can be a file inside the clone.
         # `git switch` takes only a branch, never a tag of the same name.
         restore = ["git", "switch", "-q", branch] if branch else [
             "git", "checkout", "-q", "--detach", start_ref]
         restored = run(restore, top, check=False)
-        # Cleaning can remove an ignored directory that holds the report.
         os.makedirs(os.path.dirname(out), exist_ok=True)
         with open(out, "w") as handle:
             json.dump(rows, handle, indent=2)
