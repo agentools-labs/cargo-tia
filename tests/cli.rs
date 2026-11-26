@@ -1983,6 +1983,65 @@ fn line_ending_changes_that_git_normalizes_count() {
 }
 
 #[test]
+fn a_restored_file_with_other_line_endings_counts() {
+    let repo = chain();
+    repo.write(".gitattributes", "*.txt text eol=crlf\n");
+    repo.write("crates/lonely/tests/data.txt", "a\r\nb\r\n");
+    repo.commit("fixture with CRLF line endings");
+    repo.git(&["rm", "-q", "crates/lonely/tests/data.txt"]);
+    repo.commit("delete the fixture");
+    // Restored as a checkout writes it: no change against the base.
+    repo.write("crates/lonely/tests/data.txt", "a\r\nb\r\n");
+    assert!(selected(&repo.select("HEAD^", &[])).is_empty());
+    // Restored with LF line endings: the test reads other bytes.
+    repo.write("crates/lonely/tests/data.txt", "a\nb\n");
+    assert_eq!(selected(&repo.select("HEAD^", &[])), ["lonely"]);
+}
+
+#[test]
+fn line_endings_with_autocrlf_spelled_yes_count() {
+    let repo = chain();
+    repo.git(&["config", "core.autocrlf", "yes"]);
+    repo.write("crates/lonely/tests/data.txt", "a\r\nb\r\n");
+    repo.commit("fixture with CRLF line endings");
+    // A checkout writes every text file with CRLF, as on a machine with this setting.
+    repo.git(&["rm", "-q", "-r", "--cached", "."]);
+    repo.git(&["reset", "-q", "--hard"]);
+    assert!(selected(&repo.select("HEAD", &[])).is_empty());
+    repo.write("crates/lonely/tests/data.txt", "a\nb\n");
+    repo.git(&["add", "crates/lonely/tests/data.txt"]);
+    assert_eq!(selected(&repo.select("HEAD", &[])), ["lonely"]);
+}
+
+#[test]
+fn line_endings_inside_a_submodule_count() {
+    let sub = Repo::new("sub-eol");
+    sub.write(".gitattributes", "*.txt text eol=crlf\n");
+    sub.write("data.txt", "a\r\nb\r\n");
+    sub.commit("data");
+    let repo = chain();
+    repo.git(&[
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        sub.dir.to_str().unwrap(),
+        "crates/lonely/vendor",
+    ]);
+    repo.commit("submodule");
+    assert!(selected(&repo.select("HEAD", &[])).is_empty());
+    // Saved with LF line endings and staged inside the submodule: its status is clean.
+    let inner = Repo {
+        dir: repo.path("crates/lonely/vendor"),
+    };
+    inner.write("data.txt", "a\nb\n");
+    inner.git(&["add", "data.txt"]);
+    assert_eq!(inner.git(&["status", "--porcelain"]), "");
+    assert!(is_full(&repo.select("HEAD", &[])));
+}
+
+#[test]
 fn case_only_renames_count() {
     let repo = chain();
     repo.write("crates/lonely/src/worker.rs", "// worker\n");

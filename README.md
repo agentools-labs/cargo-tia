@@ -255,7 +255,9 @@ This repository uses the tool on itself in [its CI workflow](.github/workflows/c
 - To compare the working tree, git runs the clean filters that the repository configures, for example
   Git LFS, as `git status` does. Git also normalizes line endings before it compares. A file that
   differs from its checkout only in line endings still counts as changed when its line endings differ
-  from what the `eol` attribute, `core.autocrlf` or `core.eol` makes a checkout write. The tool turns off `core.fsmonitor` hooks.
+  from what the `eol` attribute, `core.autocrlf` or `core.eol` makes a checkout write. A file that
+  never had the checkout's line endings, such as a file created with LF while `core.autocrlf` is
+  true, counts as changed until a checkout writes it again. The tool turns off `core.fsmonitor` hooks.
 - Windows is not tested.
 
 ## Measurements

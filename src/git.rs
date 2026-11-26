@@ -190,6 +190,7 @@ pub fn changed_files(
     // shows a file that differs from its checkout only in line endings, while Cargo reads
     // other bytes. An index refresh can also cache such a file's new stat data, so every
     // tracked file is checked.
+    let checkout = Checkout::read(&toplevel);
     let line_endings = || {
         line_ending_changes(&toplevel)
             .map_err(|error| fail(format!("cannot read line endings: {error}")))
@@ -277,7 +278,7 @@ pub fn changed_files(
         // same for Cargo.
         let unindexed: Vec<&String> = new_files
             .iter()
-            .filter(|path| dirty.contains(path) && !differs(&toplevel, "HEAD", path))
+            .filter(|path| dirty.contains(path) && !differs(&toplevel, "HEAD", path, &checkout))
             .collect();
         let converted = line_endings()?;
         // Such a file can be a link that a package reads through: it still reaches its target.
@@ -300,7 +301,7 @@ pub fn changed_files(
             .or_else(|| {
                 hidden
                     .iter()
-                    .find(|path| differs(&toplevel, "HEAD", path))
+                    .find(|path| differs(&toplevel, "HEAD", path, &checkout))
                     .cloned()
             });
         if let Some(path) = differing {
@@ -342,7 +343,9 @@ pub fn changed_files(
         // only when it differs from the base.
         let restored: Vec<String> = new_files
             .iter()
-            .filter(|path| paths.contains(path) && !differs(&toplevel, &merge_base, path))
+            .filter(|path| {
+                paths.contains(path) && !differs(&toplevel, &merge_base, path, &checkout)
+            })
             .cloned()
             .collect();
         paths.retain(|path| !restored.contains(path));
@@ -356,7 +359,7 @@ pub fn changed_files(
         // decides. A hidden link or submodule stays a change (below).
         let (changed, same): (Vec<String>, Vec<String>) = hidden
             .into_iter()
-            .partition(|path| differs(&toplevel, &merge_base, path));
+            .partition(|path| differs(&toplevel, &merge_base, path, &checkout));
         let same: Vec<String> = same
             .into_iter()
             .filter(|path| !hidden_links.contains(path))
@@ -417,28 +420,77 @@ pub fn changed_files(
     })
 }
 
-/// The tracked files whose line endings differ from what a checkout writes: from the `eol`
-/// attribute, or for text files from `core.autocrlf` and `core.eol`. Git normalizes line
-/// endings when it compares, so its diff does not show such a file.
+/// How a checkout writes line endings: `core.autocrlf` and `core.eol`.
+struct Checkout {
+    /// `core.autocrlf`: `Some("crlf")` for true, `Some("lf")` for input, `None` for false.
+    autocrlf: Option<&'static str>,
+    /// What a checkout writes for a file with the `text` attribute and no `eol` attribute.
+    text_eol: &'static str,
+}
+
+impl Checkout {
+    fn read(toplevel: &Path) -> Checkout {
+        let raw = git(toplevel, &["config", "--get", "core.autocrlf"]);
+        let autocrlf = match raw {
+            Ok(value) if value.trim().eq_ignore_ascii_case("input") => Some("lf"),
+            // Git's boolean spellings: true, yes, on, 1, and a key without a value.
+            Ok(_) => git(toplevel, &["config", "--bool", "--get", "core.autocrlf"])
+                .is_ok_and(|value| value.trim() == "true")
+                .then_some("crlf"),
+            Err(_) => None,
+        };
+        let core_eol = git(toplevel, &["config", "--get", "core.eol"])
+            .map(|value| value.trim().to_ascii_lowercase())
+            .unwrap_or_default();
+        let text_eol = match (autocrlf, core_eol.as_str()) {
+            (Some(eol), _) => eol,
+            (None, "crlf") => "crlf",
+            (None, "lf") => "lf",
+            _ if cfg!(windows) => "crlf",
+            _ => "lf",
+        };
+        Checkout { autocrlf, text_eol }
+    }
+
+    /// The line endings that a checkout writes for a blob with LF line endings and these
+    /// attributes (`text`, `-text`, `text=auto`, `eol=crlf`, as `git ls-files --eol` prints
+    /// them). `None` when it writes the blob unchanged.
+    fn writes(&self, attributes: &[&str]) -> Option<&'static str> {
+        if attributes.contains(&"-text") {
+            None
+        } else if attributes.contains(&"eol=crlf") {
+            Some("crlf")
+        } else if attributes.contains(&"eol=lf") {
+            Some("lf")
+        } else if attributes.iter().any(|a| *a == "text" || *a == "text=auto") {
+            Some(self.text_eol)
+        } else {
+            self.autocrlf
+        }
+    }
+}
+
+/// The line endings of some bytes, as `git ls-files --eol` names them.
+fn line_endings_of(bytes: &[u8]) -> &'static str {
+    if bytes.contains(&0) {
+        return "-text";
+    }
+    let crlf = bytes.windows(2).filter(|pair| pair == b"\r\n").count();
+    let lf = bytes.iter().filter(|byte| **byte == b'\n').count() - crlf;
+    match (crlf > 0, lf > 0) {
+        (false, false) => "none",
+        (true, false) => "crlf",
+        (false, true) => "lf",
+        (true, true) => "mixed",
+    }
+}
+
+/// The tracked files whose line endings differ from what a checkout writes. Git normalizes
+/// line endings when it compares, so its diff does not show such a file.
 fn line_ending_changes(toplevel: &Path) -> Result<Vec<String>, String> {
     // Each entry is "i/<index> w/<working tree> attr/<attributes>\t<path>".
     let listing = git(toplevel, &["ls-files", "-z", "--eol"])?;
-    let setting = |key: &str| {
-        git(toplevel, &["config", "--get", key])
-            .map(|value| value.trim().to_ascii_lowercase())
-            .unwrap_or_default()
-    };
-    let autocrlf = setting("core.autocrlf");
-    let core_eol = setting("core.eol");
-    // What a checkout writes for a text file without an `eol` attribute.
-    let text_eol = match (autocrlf.as_str(), core_eol.as_str()) {
-        ("true", _) => "crlf",
-        ("input", _) => "lf",
-        (_, "crlf") => "crlf",
-        (_, "lf") => "lf",
-        _ if cfg!(windows) => "crlf",
-        _ => "lf",
-    };
+    let checkout = Checkout::read(toplevel);
     let mut changed = Vec::new();
     for entry in listing.split('\0').filter(|entry| !entry.is_empty()) {
         let Some((meta, path)) = entry.split_once('\t') else {
@@ -456,30 +508,59 @@ fn line_ending_changes(toplevel: &Path) -> Result<Vec<String>, String> {
                 attributes.split_whitespace().collect()
             });
         // Only an index blob with LF line endings converts both ways; a binary file does not.
-        if index != "lf"
-            || attributes.contains(&"-text")
-            || !matches!(work, "lf" | "crlf" | "mixed")
-        {
+        if index != "lf" || !matches!(work, "lf" | "crlf" | "mixed") {
             continue;
         }
-        let expected = if attributes.contains(&"eol=crlf") {
-            "crlf"
-        } else if attributes.contains(&"eol=lf") {
-            "lf"
-        } else if attributes.iter().any(|a| *a == "text" || *a == "text=auto") {
-            text_eol
-        } else if autocrlf == "true" {
-            "crlf"
-        } else if autocrlf == "input" {
-            "lf"
-        } else {
-            continue;
-        };
-        if work != expected {
+        if checkout
+            .writes(&attributes)
+            .is_some_and(|expected| work != expected)
+        {
             changed.push(path.to_string());
         }
     }
     Ok(changed)
+}
+
+/// True when a file's line endings differ from what a checkout of `object`, a blob that Git
+/// found equal after normalizing line endings, writes. True when that cannot be told.
+fn line_endings_differ(toplevel: &Path, path: &str, object: &str, checkout: &Checkout) -> bool {
+    let Ok(file) = std::fs::read(toplevel.join(path)) else {
+        return true;
+    };
+    let work = line_endings_of(&file);
+    if !matches!(work, "lf" | "crlf" | "mixed") {
+        return false;
+    }
+    // The blob as stored: `cat-file blob` runs no filter program.
+    let Ok(blob) = git_bytes(toplevel, &["cat-file", "blob", object]) else {
+        return true;
+    };
+    if line_endings_of(&blob) != "lf" {
+        return false;
+    }
+    // "<path>\0<attribute>\0<value>\0" for each attribute.
+    let Ok(listing) = git(toplevel, &["check-attr", "-z", "text", "eol", "--", path]) else {
+        return true;
+    };
+    let fields: Vec<&str> = listing.split('\0').collect();
+    let mut attributes = Vec::new();
+    for triple in fields.chunks(3) {
+        let [_, attribute, value] = triple else {
+            continue;
+        };
+        match (*attribute, *value) {
+            (_, "unspecified") => {}
+            ("text", "set") => attributes.push("text".to_string()),
+            ("text", "unset") => attributes.push("-text".to_string()),
+            ("text", "auto") => attributes.push("text=auto".to_string()),
+            ("eol", value) => attributes.push(format!("eol={value}")),
+            _ => {}
+        }
+    }
+    let attributes: Vec<&str> = attributes.iter().map(String::as_str).collect();
+    checkout
+        .writes(&attributes)
+        .is_some_and(|expected| work != expected)
 }
 
 /// True when two paths name one directory entry, as two spellings do on a case-insensitive
@@ -527,6 +608,10 @@ fn submodule_unknown(toplevel: &Path, path: &str, links: &mut Vec<String>) -> bo
     if !status.is_empty() {
         return true;
     }
+    // Line endings that Git normalizes hide an edit from the submodule's status too.
+    if !line_ending_changes(dir).is_ok_and(|changed| changed.is_empty()) {
+        return true;
+    }
     let mut unknown = false;
     for entry in index.split('\0').filter(|entry| !entry.is_empty()) {
         let Some((meta, inner)) = entry.split_once('\t') else {
@@ -548,7 +633,7 @@ fn submodule_unknown(toplevel: &Path, path: &str, links: &mut Vec<String>) -> bo
 
 /// For a file that git hides (assume-unchanged or skip-worktree): true unless its working-tree
 /// content and executable bit match `revision`. Any doubt counts as a difference.
-fn differs(toplevel: &Path, revision: &str, path: &str) -> bool {
+fn differs(toplevel: &Path, revision: &str, path: &str, checkout: &Checkout) -> bool {
     let file = toplevel.join(path);
     let Ok(metadata) = std::fs::symlink_metadata(&file) else {
         return true; // deleted
@@ -588,7 +673,8 @@ fn differs(toplevel: &Path, revision: &str, path: &str) -> bool {
     }
     #[cfg(not(unix))]
     let _ = (metadata, mode);
-    hash.trim() != object
+    // Equal after Git normalized the line endings: the bytes can still differ from a checkout.
+    hash.trim() != object || line_endings_differ(toplevel, path, object, checkout)
 }
 
 /// The branch that `origin/HEAD` points to. No guess when it is not set.
@@ -604,6 +690,11 @@ fn default_base(toplevel: &Path) -> Option<String> {
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
+    String::from_utf8(git_bytes(dir, args)?).map_err(|_| "git printed a non-UTF-8 path".to_string())
+}
+
+/// Runs git as `git` does, and returns its output as bytes, such as a blob's content.
+fn git_bytes(dir: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
     let mut command = Command::new("git");
     for var in local_env_vars() {
         command.env_remove(var);
@@ -645,8 +736,43 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
     if output.status.success() {
-        String::from_utf8(output.stdout).map_err(|_| "git printed a non-UTF-8 path".to_string())
+        Ok(output.stdout)
     } else {
         Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names_line_endings_as_git_does() {
+        assert_eq!(line_endings_of(b""), "none");
+        assert_eq!(line_endings_of(b"one line"), "none");
+        assert_eq!(line_endings_of(b"a\nb\n"), "lf");
+        assert_eq!(line_endings_of(b"a\r\nb\r\n"), "crlf");
+        assert_eq!(line_endings_of(b"a\r\nb\n"), "mixed");
+        assert_eq!(line_endings_of(b"a\0b\n"), "-text");
+    }
+
+    #[test]
+    fn a_checkout_writes_line_endings_from_attributes_then_settings() {
+        let unix = Checkout {
+            autocrlf: None,
+            text_eol: "lf",
+        };
+        assert_eq!(unix.writes(&["text", "eol=crlf"]), Some("crlf"));
+        assert_eq!(unix.writes(&["text=auto", "eol=lf"]), Some("lf"));
+        assert_eq!(unix.writes(&["text"]), Some("lf"));
+        assert_eq!(unix.writes(&["-text"]), None);
+        assert_eq!(unix.writes(&[]), None);
+        let windows = Checkout {
+            autocrlf: Some("crlf"),
+            text_eol: "crlf",
+        };
+        assert_eq!(windows.writes(&[]), Some("crlf"));
+        assert_eq!(windows.writes(&["eol=lf"]), Some("lf"));
+        assert_eq!(windows.writes(&["-text"]), None);
     }
 }
