@@ -574,7 +574,13 @@ fn main() -> ExitCode {
             // The report is information: a closed stderr must not stop the run.
             let report = report(&workspace, &base, &selection);
             say(report.strip_suffix('\n').unwrap_or(&report));
-            if selection.packages.is_empty() {
+            // A request for the test command's help runs it whatever the selection.
+            let help = options
+                .passthrough
+                .iter()
+                .take_while(|arg| *arg != "--")
+                .any(|arg| arg == "--help" || short_flag(&arg.to_string_lossy(), &['h']));
+            if selection.packages.is_empty() && !help {
                 say("no package is affected; nothing to run");
                 return ExitCode::SUCCESS;
             }
