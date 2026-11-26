@@ -1968,8 +1968,11 @@ fn line_ending_changes_that_git_normalizes_count() {
     // Rewriting the same bytes is no change.
     repo.write("crates/lonely/tests/data.txt", "a\r\nb\r\n");
     assert!(selected(&repo.select("HEAD", &[])).is_empty());
-    // An editor saves LF: git diff shows nothing, but the test reads other bytes.
+    // An editor saves LF, and staging stores the same normalized blob with the file's new
+    // stat data: git diff and git status show nothing, but the test reads other bytes.
     repo.write("crates/lonely/tests/data.txt", "a\nb\n");
+    repo.git(&["add", "crates/lonely/tests/data.txt"]);
+    assert_eq!(repo.git(&["status", "--porcelain"]), "");
     let json = repo.select("HEAD", &[]);
     assert_eq!(selected(&json), ["lonely"], "{json:#}");
     // With --committed, the working tree no longer matches HEAD.

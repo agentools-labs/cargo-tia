@@ -186,31 +186,13 @@ pub fn changed_files(
         Ok((paths, special))
     };
     let untracked = || list(&["ls-files", "-z", "--others", "--exclude-standard"]);
-    // Git converts line endings before it compares, so `git diff` drops a file that differs
-    // from its checkout only in line endings, while Cargo reads other bytes. The candidates
-    // are the files that a diff without the index refresh still reports.
-    let line_endings = |revision: &str, reported: &[String]| -> Result<Vec<String>, Unknown> {
-        let unrefreshed = list(&[
-            "-c",
-            "diff.autoRefreshIndex=false",
-            "diff",
-            "--raw",
-            "-z",
-            "--no-abbrev",
-            "--no-renames",
-            "--no-ext-diff",
-            "--no-color",
-            "--ignore-submodules=none",
-            revision,
-            "--",
-        ])?;
-        let candidates: Vec<String> = unrefreshed
-            .chunks(2)
-            .filter_map(|pair| pair.get(1))
-            .filter(|path| !reported.contains(path))
-            .cloned()
-            .collect();
-        Ok(line_ending_changes(&toplevel, &candidates))
+    // Git converts line endings before it compares, so neither `git diff` nor `git status`
+    // shows a file that differs from its checkout only in line endings, while Cargo reads
+    // other bytes. An index refresh can also cache such a file's new stat data, so every
+    // tracked file is checked.
+    let line_endings = || {
+        line_ending_changes(&toplevel)
+            .map_err(|error| fail(format!("cannot read line endings: {error}")))
     };
     // Each entry is "<tag> <mode> <object> <stage>\t<path>". `git diff` skips the working-tree
     // content of entries marked assume-unchanged (lowercase tag) or skip-worktree (`S`).
@@ -297,7 +279,7 @@ pub fn changed_files(
             .iter()
             .filter(|path| dirty.contains(path) && !differs(&toplevel, "HEAD", path))
             .collect();
-        let converted = line_endings("HEAD", &dirty)?;
+        let converted = line_endings()?;
         // Such a file can be a link that a package reads through: it still reaches its target.
         untracked_links.extend(
             unindexed
@@ -385,7 +367,7 @@ pub fn changed_files(
         // Hidden links and submodules with hidden edits are changes of unknown effect.
         paths.extend(hidden_links.iter().cloned());
         special.extend(hidden_links);
-        let converted = line_endings(&merge_base, &paths)?;
+        let converted = line_endings()?;
         paths.extend(converted);
     }
 
@@ -435,18 +417,12 @@ pub fn changed_files(
     })
 }
 
-/// The candidates whose line endings differ from what a checkout writes: from the `eol`
+/// The tracked files whose line endings differ from what a checkout writes: from the `eol`
 /// attribute, or for text files from `core.autocrlf` and `core.eol`. Git normalizes line
-/// endings when it compares, so its diff does not show such a file. When the line endings
-/// cannot be read, every candidate counts.
-fn line_ending_changes(toplevel: &Path, candidates: &[String]) -> Vec<String> {
-    if candidates.is_empty() {
-        return Vec::new();
-    }
+/// endings when it compares, so its diff does not show such a file.
+fn line_ending_changes(toplevel: &Path) -> Result<Vec<String>, String> {
     // Each entry is "i/<index> w/<working tree> attr/<attributes>\t<path>".
-    let Ok(listing) = git(toplevel, &["ls-files", "-z", "--eol"]) else {
-        return candidates.to_vec();
-    };
+    let listing = git(toplevel, &["ls-files", "-z", "--eol"])?;
     let setting = |key: &str| {
         git(toplevel, &["config", "--get", key])
             .map(|value| value.trim().to_ascii_lowercase())
@@ -468,9 +444,6 @@ fn line_ending_changes(toplevel: &Path, candidates: &[String]) -> Vec<String> {
         let Some((meta, path)) = entry.split_once('\t') else {
             continue;
         };
-        if !candidates.iter().any(|candidate| candidate == path) {
-            continue;
-        }
         let field = |prefix: &str| {
             meta.split_whitespace()
                 .find_map(|part| part.strip_prefix(prefix))
@@ -506,7 +479,7 @@ fn line_ending_changes(toplevel: &Path, candidates: &[String]) -> Vec<String> {
             changed.push(path.to_string());
         }
     }
-    changed
+    Ok(changed)
 }
 
 /// True when two paths name one directory entry, as two spellings do on a case-insensitive
