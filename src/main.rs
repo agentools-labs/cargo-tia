@@ -28,7 +28,8 @@ Usage:
 
 Options:
   --base REV             compare with REV directly
-                         [default: origin/HEAD, the default branch of origin]
+                         [default: the merge base of HEAD and origin/HEAD, the
+                         default branch of origin]
   --committed            compare committed changes only; the working tree must match HEAD
   --manifest-path PATH   path to the workspace Cargo.toml
   --full-run GLOB        a changed file matching GLOB selects the full workspace (repeatable)

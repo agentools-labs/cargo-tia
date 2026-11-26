@@ -111,19 +111,19 @@ pub fn changed_files(
     let merge_base = if explicit {
         // An explicit base is compared directly. A merge base would hide the commits of the base
         // that HEAD lacks: after a rollback, HEAD itself.
-        let resolved = git(
-            &toplevel,
-            // Without --quiet: a warning, such as for an ambiguous name or a reflog date
-            // older than the log, makes the base unknown.
-            &[
-                "rev-parse",
-                "--verify",
-                "--end-of-options",
-                &format!("{base}^{{commit}}"),
-            ],
-        )
-        .map_err(|error| fail(format!("cannot resolve `{base}` to a commit: {error}")))?;
-        resolved.trim().to_string()
+        // Without --quiet: a warning, such as for an ambiguous name or a reflog date older than
+        // the log, makes the base unknown. The revision as given first (`:/message` takes the
+        // rest as its pattern), then its object as a commit.
+        let resolve = |revision: &str| {
+            git(
+                &toplevel,
+                &["rev-parse", "--verify", "--end-of-options", revision],
+            )
+            .map(|object| object.trim().to_string())
+            .map_err(|error| fail(format!("cannot resolve `{base}` to a commit: {error}")))
+        };
+        let object = resolve(&base)?;
+        resolve(&format!("{object}^{{commit}}"))?
     } else {
         merge_base_with(&toplevel, &base).map_err(fail)?
     };

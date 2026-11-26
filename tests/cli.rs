@@ -807,9 +807,15 @@ fn an_explicit_base_is_compared_directly() {
     let repo = chain();
     repo.append("crates/lonely/src/lib.rs", "pub fn g() {}\n");
     let ahead = repo.commit("lonely work");
+    // A branch keeps the commit reachable for the message search below.
+    repo.git(&["branch", "kept", &ahead]);
     // Roll back: HEAD is the parent of the base, which a merge base would hide.
     repo.git(&["reset", "-q", "--hard", "HEAD^"]);
     let json = repo.select(&ahead, &[]);
+    assert_eq!(selected(&json), ["lonely"], "{json:#}");
+    assert_eq!(json["compared"], ahead.as_str());
+    // Any revision syntax, such as a search of commit messages.
+    let json = repo.select(":/lonely work", &[]);
     assert_eq!(selected(&json), ["lonely"], "{json:#}");
     assert_eq!(json["compared"], ahead.as_str());
 }
@@ -2820,8 +2826,18 @@ fn shallow_clones_trust_only_an_endpoint_merge_base() {
         .as_str()
         .unwrap()
         .contains("shallow"));
-    // HEAD^1 is an ancestor of HEAD, so the merge base is one of the two commits.
-    assert_eq!(selected(&clone.select("HEAD^1", &["--committed"])), ["app"]);
+    // With a default base at HEAD^1, an ancestor of HEAD, the merge base is one of the two
+    // commits.
+    clone.git(&["update-ref", "refs/remotes/origin/parent", "HEAD^1"]);
+    clone.git(&[
+        "symbolic-ref",
+        "refs/remotes/origin/HEAD",
+        "refs/remotes/origin/parent",
+    ]);
+    let output = clone.tia(&["tia", "list", "--json", "--committed"]);
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(!is_full(&json), "{json:#}");
+    assert_eq!(selected(&json), ["app"]);
 }
 
 #[test]
