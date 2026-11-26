@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: fmt, clippy and test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the stable toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+      - name: Test the measurement script's parsers
+        run: python3 scripts/test_measure.py
+
+  msrv:
+    name: test on the minimum Rust version (1.87)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust 1.87
+        run: |
+          rustup toolchain install 1.87 --profile minimal
+          rustup default 1.87
+      - run: cargo test --locked
+
+  self:
+    name: cargo tia on its own changes
+    runs-on: ubuntu-latest
+    env:
+      # A pull request checks out a merge commit whose first parent is the target branch.
+      # A push compares with the previous tip.
+      BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || github.event.before }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The merge commit and its parents are enough for a pull request.
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 0 }}
+      - name: Install the stable toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Build cargo-tia
+        run: |
+          cargo build --locked
+          echo "$PWD/target/debug" >> "$GITHUB_PATH"
+      - name: Show the selection
+        run: cargo tia list --base "$BASE"
+      - name: Test the selection
+        # An explicit base is compared directly, also after a force push that rolls back. A
+        # previous tip that the clone does not have selects the full workspace.
+        run: cargo tia test --base "$BASE" -- --locked

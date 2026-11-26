@@ -1,0 +1,303 @@
+#!/usr/bin/env python3
+"""Replays recent commits of a Cargo workspace and compares cargo-tia with full runs.
+
+Usage: measure.py CARGO_TIA REPO_DIR SELECT_COMMITS TIMED_COMMITS OUT_JSON
+
+For each of the last SELECT_COMMITS first-parent commits C, it records the selection of
+`cargo tia list --json --committed --base C^1` at C. For the newest TIMED_COMMITS of them,
+it builds the workspace and runs its tests once untimed (the first run after a build does
+extra work), then times `cargo test --workspace --no-fail-fast` and
+`cargo test <selection> --no-fail-fast`, and records the packages with failing tests in
+each run. Only the full run is warmed up: when the selection builds with other features, the
+selected run pays that compilation, as it would in CI with a cache from full builds. A
+package that fails in the full run but is not selected is a missed failure. A
+full run that fails to compile, or exits non-zero without naming a failing package, makes
+the commit inconclusive.
+Run it in a clean, disposable clone: it checks out each commit (detached) and then returns to
+the starting branch or commit. Set CARGO_TARGET_DIR to a directory outside the clone: the
+script keeps the build output there, intermediate files (CARGO_BUILD_BUILD_DIR) included.
+CARGO_TIA and OUT_JSON must be outside the clone too.
+"""
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+
+def run(args, cwd, check=True):
+    # Test output can hold any bytes.
+    result = subprocess.run(args, cwd=cwd, capture_output=True, text=True,
+                            encoding="utf-8", errors="replace")
+    if check and result.returncode != 0:
+        raise SystemExit(f"{args} failed:\n{result.stderr}")
+    return result
+
+
+def summary_hints(stderr):
+    """The rerun hints of Cargo's final summary, such as "-p foo --lib".
+
+    With one failing target the summary can be the last "error: test failed, to rerun pass"
+    line ("doctest failed" for doctests); otherwise it is the "error: N targets failed:" line and the indented hints after it.
+    Only the summary counts: a test can run a nested Cargo whose output comes earlier.
+    """
+    lines = stderr.splitlines()
+    for index in range(len(lines) - 1, -1, -1):
+        line = lines[index]
+        single = re.match(r"error: (?:doc)?test failed, to rerun pass `([^`]+)`", line)
+        if single:
+            return [single.group(1)]
+        if re.match(r"error: \d+ targets? failed:", line):
+            hints = []
+            for hint in lines[index + 1:]:
+                found = re.match(r"\s+`([^`]+)`", hint)
+                if not found:
+                    break
+                hints.append(found.group(1))
+            return hints
+    return []
+
+
+def failing_packages(stderr):
+    hints = summary_hints(stderr)
+    named = set()
+    for hint in hints:
+        found = re.match(r"-p (\S+?)(?:@\S+)?(?: |$)", hint)
+        if found:
+            named.add(found.group(1))
+    # In a workspace with one package, Cargo's hints name no package: "*" stands for it.
+    if hints and not named:
+        named.add("*")
+    return sorted(named)
+
+
+def not_started(stderr):
+    # Cargo reports a test binary that never started (a missing runner or rustdoc, say) as the
+    # cause of that target's "test failed" or "doctest failed" error. Only the targets of the
+    # final summary count. A test that runs Cargo on a fixture with the same package and
+    # target names prints the same lines: the script cannot tell them apart, and then reports
+    # the commit as inconclusive, never as a run without missed failures.
+    hints = set(summary_hints(stderr))
+    causes = re.findall(
+        r"^error: (?:doc)?test failed, to rerun pass `([^`]+)`\n\nCaused by:\n"
+        r"  could not execute process ",
+        stderr, re.M)
+    return any(hint in hints for hint in causes)
+
+
+def build_phase(stderr):
+    # Cargo builds everything before it runs the first test binary. A test can run a nested
+    # Cargo, on a fixture that is meant to fail, say: its output comes later. A test launch
+    # names a target; a verbose compiler line ("Running `rustc ...`") quotes a command.
+    started = re.search(r"^\s+(?:Running [^`]|Doc-tests )", stderr, re.M)
+    return stderr[:started.start()] if started else stderr
+
+
+def compile_failures(stderr):
+    # Cargo's own error lines only: a warning, from a build script say, can quote the words.
+    return sorted(set(re.findall(r"^error: could not compile `([^`]+)`", build_phase(stderr), re.M)))
+
+
+def build_lockfiles(top):
+    """Every Cargo.lock that the build wrote or changed, by absolute path, with its content.
+
+    Also a lockfile at a configured path (resolver.lockfile-path) inside the repository.
+    """
+    status = run(
+        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored"], top
+    ).stdout
+    saved = {}
+    for entry in status.split("\0"):
+        path = entry[3:]
+        if entry and os.path.basename(path) == "Cargo.lock":
+            full = os.path.join(top, path)
+            if os.path.isfile(full):
+                with open(full, "rb") as handle:
+                    saved[full] = handle.read()
+    return saved
+
+
+def cargo_test(args, cwd):
+    start = time.monotonic()
+    # Colors would put escape codes into the summary that the script reads.
+    result = run(["cargo", "test", "--color", "never", *args, "--no-fail-fast"], cwd, check=False)
+    seconds = time.monotonic() - start
+    # A run that exits 0 has no failures, whatever its warnings say.
+    failing = failing_packages(result.stderr) if result.returncode != 0 else []
+    broken = compile_failures(result.stderr)
+    return {
+        "seconds": round(seconds, 1),
+        "exit": result.returncode,
+        "compile_failures": broken,
+        "failing_packages": failing,
+        # A test runner that could not start names packages too, but ran no test.
+        "inconclusive": result.returncode != 0 and (
+            bool(broken) or not failing or not_started(result.stderr)),
+    }
+
+
+def main():
+    tia, repo, select_count, timed_count, out = sys.argv[1:6]
+    # Subprocesses run inside the measured repository, so make the given paths absolute.
+    # Resolved: a link inside the clone would be cleaned away with it.
+    tia = os.path.realpath(tia if os.sep in tia else (shutil.which(tia) or tia))
+    if not os.path.isfile(tia):
+        raise SystemExit(f"cannot find the cargo-tia executable: {tia}")
+    repo, out = os.path.abspath(repo), os.path.abspath(out)
+    # The workspace can be a directory of a larger repository: git cleans and checks the whole
+    # repository, and Cargo runs in the workspace.
+    top = run(["git", "rev-parse", "--show-toplevel"], repo).stdout.strip()
+    real_repo = os.path.realpath(top)
+
+    def inside(path):
+        # With links resolved: /tmp and /private/tmp are one directory on macOS.
+        real = os.path.realpath(path)
+        return os.path.commonpath([real, real_repo]) == real_repo
+
+    # The repository is cleaned between commits: the tool must live elsewhere.
+    if inside(tia):
+        raise SystemExit("build or install cargo-tia outside the measured clone")
+    # The clone is cleaned between runs: the warm build must live outside it.
+    target_dir = os.environ.get("CARGO_TARGET_DIR", "")
+    if not target_dir or inside(target_dir):
+        raise SystemExit("set CARGO_TARGET_DIR to a directory outside the measured clone")
+    # A report in the clone would make the clone unclean for the next run.
+    if inside(out):
+        raise SystemExit("write OUT_JSON outside the measured clone")
+    # Cargo runs inside the clone: a relative path would point into it.
+    # The resolved path: a link inside the clone would be cleaned away with it.
+    os.environ["CARGO_TARGET_DIR"] = os.path.realpath(target_dir)
+    # Cargo can keep intermediate files in a separate build directory that the workspace
+    # configuration places inside the clone. The environment overrides that configuration.
+    os.environ["CARGO_BUILD_BUILD_DIR"] = os.path.realpath(target_dir)
+    # Plain output: the script reads Cargo's messages.
+    os.environ["CARGO_TERM_COLOR"] = "never"
+    # Cargo's default verbosity: the parsers read its normal messages.
+    os.environ["CARGO_TERM_VERBOSE"] = "false"
+    os.environ["CARGO_TERM_QUIET"] = "false"
+    select_count, timed_count = int(select_count), int(timed_count)
+    if run(["git", "status", "--porcelain", "--untracked-files=all"], top).stdout.strip():
+        raise SystemExit(f"{repo} has uncommitted changes; use a clean clone")
+    # Git keeps local edits in assume-unchanged or skip-worktree files through checkouts, and
+    # status does not show them: the replay would measure those edits.
+    hidden = [line for line in run(["git", "ls-files", "-v"], top).stdout.splitlines()
+              if line[:1].islower() or line[:1] == "S"]
+    if hidden:
+        raise SystemExit(f"{repo} has files marked assume-unchanged or skip-worktree, such as "
+                         f"{hidden[0][2:]}; use a clean clone")
+    # Checking out old commits would leave submodules at other revisions.
+    if any(line.startswith("160000 ") for line in run(["git", "ls-files", "-s"], top).stdout.splitlines()):
+        raise SystemExit(f"{repo} has submodules, which this script does not replay")
+    start_ref = run(["git", "rev-parse", "HEAD"], top).stdout.strip()
+    # The full name: a short name such as heads/v1 appears when a tag has the same name.
+    head_ref = run(["git", "symbolic-ref", "-q", "HEAD"], top, check=False).stdout.strip()
+    branch = head_ref.removeprefix("refs/heads/") if head_ref.startswith("refs/heads/") else ""
+    commits = run(
+        ["git", "rev-list", "--first-parent", "-n", str(select_count), start_ref], top
+    ).stdout.split()
+    # A commit without a parent (the root, or the end of a shallow clone) has nothing to compare.
+    commits = [
+        commit for commit in commits
+        if run(["git", "rev-parse", "--verify", "-q", f"{commit}^1"], top, check=False).returncode == 0
+    ]
+    print(f"measuring {len(commits)} commits", file=sys.stderr)
+    rows = []
+    try:
+        for index, commit in enumerate(commits):
+            # A build or a test can rewrite tracked files or leave files behind. The clone is
+            # disposable and the build output lives outside it.
+            run(["git", "reset", "-q", "--hard"], top)
+            run(["git", "clean", "-ffdxq"], top)
+            run(["git", "checkout", "-q", "--detach", commit], top)
+            # In a larger repository, the workspace can be added or moved later.
+            if not os.path.isdir(repo):
+                row = {"commit": commit, "error": "the workspace directory does not exist here"}
+                rows.append(row)
+                print(json.dumps(row), flush=True)
+                continue
+            listing = run(["git", "ls-files", "-s"], top).stdout.splitlines()
+            if any(line.startswith("160000 ") for line in listing):
+                row = {"commit": commit, "error": "submodules at this commit are not replayed"}
+                rows.append(row)
+                print(json.dumps(row), flush=True)
+                continue
+            started = time.monotonic()
+            listed = run(
+                [tia, "list", "--json", "--committed", "--base", f"{commit}^1"], repo,
+                check=False,
+            )
+            selection_seconds = time.monotonic() - started
+            if listed.returncode != 0:
+                # For example, a manifest that does not parse at this commit.
+                row = {"commit": commit, "error": listed.stderr.strip()}
+                rows.append(row)
+                print(json.dumps(row), flush=True)
+                continue
+            data = json.loads(listed.stdout)
+            row = {
+                "commit": commit,
+                "subject": run(["git", "log", "-1", "--format=%s", commit], top).stdout.strip(),
+                "changed_files": sum(1 for f in data["changed_files"] if "link_to" not in f),
+                "workspace_packages": data["workspace_packages"],
+                "full": data["full"],
+                "full_reasons": data["full_reasons"],
+                "selected": [p["name"] for p in data["selected"]],
+                "selection_seconds": round(selection_seconds, 2),
+            }
+            if index < timed_count:
+                build = run(["cargo", "test", "--workspace", "--no-run"], repo, check=False)
+                row["build_ok"] = build.returncode == 0
+                # The build resolved the dependencies. Cleaning deletes an untracked lockfile
+                # and resets a tracked one: put the build's lockfiles back, so that every run
+                # uses the same resolution without resolving again.
+                lockfiles = build_lockfiles(top)
+                locked = ["--locked"] if row["build_ok"] else []
+
+                def clean():
+                    # Tests can write files: reset the repository before each run.
+                    run(["git", "reset", "-q", "--hard"], top)
+                    run(["git", "clean", "-ffdxq"], top)
+                    for path, content in lockfiles.items():
+                        os.makedirs(os.path.dirname(path), exist_ok=True)
+                        with open(path, "wb") as handle:
+                            handle.write(content)
+
+                clean()
+                cargo_test(["--workspace", *locked], repo)  # warm-up, untimed
+                clean()
+                row["full_run"] = cargo_test(["--workspace", *locked], repo)
+                if data["selected"]:
+                    clean()
+                    row["selected_run"] = cargo_test([*data["cargo_args"], *locked], repo)
+                else:
+                    row["selected_run"] = {"seconds": 0.0, "exit": 0, "compile_failures": [],
+                                           "failing_packages": [], "inconclusive": False}
+                selected = set(row["selected"])
+                full = row["full_run"]
+                # Unknown when the full run is inconclusive: a compile failure can belong to a
+                # dependency that no selection contains.
+                row["missed_failures"] = None if full["inconclusive"] else [
+                    p for p in full["failing_packages"]
+                    if p not in selected and not (p == "*" and selected)
+                ]
+            rows.append(row)
+            print(json.dumps(row), flush=True)
+    finally:
+        run(["git", "reset", "-q", "--hard"], top, check=False)
+        run(["git", "clean", "-ffdxq"], top, check=False)
+        # `git switch` takes only a branch, never a tag of the same name.
+        restore = ["git", "switch", "-q", branch] if branch else [
+            "git", "checkout", "-q", "--detach", start_ref]
+        restored = run(restore, top, check=False)
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, "w") as handle:
+            json.dump(rows, handle, indent=2)
+        if restored.returncode != 0:
+            raise SystemExit(f"results saved, but cannot restore {repo}:\n{restored.stderr}")
+
+
+if __name__ == "__main__":
+    main()
