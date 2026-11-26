@@ -125,6 +125,13 @@ impl Repo {
         self.tia_in(&self.dir, args)
     }
 
+    /// `cargo tia list --json` against the default base.
+    fn select_default(&self) -> Value {
+        let output = self.tia(&["tia", "list", "--json"]);
+        assert!(output.status.success(), "{}", stderr(&output));
+        serde_json::from_slice(&output.stdout).unwrap()
+    }
+
     /// `cargo tia list --json` against `base`.
     fn select(&self, base: &str, extra: &[&str]) -> Value {
         let mut args = vec!["tia", "list", "--json", "--base", base];
@@ -3288,7 +3295,7 @@ fn an_explicit_include_is_read_even_beside_a_legacy_config() {
 }
 
 #[test]
-fn a_merge_base_with_a_warning_selects_the_whole_workspace() {
+fn a_base_with_a_warning_selects_the_whole_workspace() {
     let repo = chain();
     repo.append("crates/lonely/src/lib.rs", "// changed\n");
     // The fresh reflog does not reach a year back: git warns and answers with HEAD.
@@ -3598,6 +3605,90 @@ fn target_specifications_found_through_rust_target_path() {
     assert!(output.status.success(), "{}", stderr(&output));
     let calls = fs::read_to_string(repo.path("cargo-calls.log")).unwrap();
     assert_eq!(calls, "test --workspace --target board\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_default_merge_base_with_a_warning_selects_the_whole_workspace() {
+    use std::os::unix::fs::PermissionsExt;
+    let repo = chain();
+    repo.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    repo.git(&[
+        "symbolic-ref",
+        "refs/remotes/origin/HEAD",
+        "refs/remotes/origin/main",
+    ]);
+    repo.append("crates/lonely/src/lib.rs", "// changed\n");
+    assert_eq!(selected(&repo.select_default()), ["lonely"]);
+    // A git that warns when it answers a merge base: the answer is then not trusted.
+    let real = Command::new("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .unwrap();
+    let real = String::from_utf8(real.stdout).unwrap().trim().to_string();
+    let bin = repo.path("fake-bin");
+    fs::create_dir_all(&bin).unwrap();
+    fs::write(
+        bin.join("git"),
+        format!(
+            "#!/bin/sh\ncase \" $* \" in *\" merge-base \"*) echo 'warning: test' >&2;; esac\n\
+             exec '{real}' \"$@\"\n"
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(bin.join("git"), fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(repo.path(".git/info/exclude"), "fake-bin/\n").unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let output = isolated(Command::new(BIN))
+        .current_dir(&repo.dir)
+        .env("PATH", path)
+        .args(["tia", "list", "--json"])
+        .output()
+        .unwrap();
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(is_full(&json), "{json:#}");
+    assert!(json["full_reasons"][0]
+        .as_str()
+        .unwrap()
+        .contains("merge base"));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_target_specification_matches_in_any_case() {
+    let repo = chain();
+    repo.write("crates/lonely/board.json", "{}\n");
+    repo.commit("board target");
+    fs::write(
+        repo.path(".git/info/exclude"),
+        "fake-cargo.sh\ncargo-calls.log\n",
+    )
+    .unwrap();
+    let cargo = fake_cargo(&repo);
+    fs::remove_file(repo.path("crates/lonely/board.json")).unwrap();
+    // Another spelling of the deleted file, and an ignore glob that matches it.
+    let output = isolated(Command::new(BIN))
+        .current_dir(&repo.dir)
+        .env("CARGO", &cargo)
+        .args([
+            "tia",
+            "test",
+            "--base",
+            "HEAD",
+            "--ignore",
+            "**/*.json",
+            "--",
+            "--target",
+            "crates/lonely/Board.json",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    let calls = fs::read_to_string(repo.path("cargo-calls.log")).unwrap();
+    assert_eq!(
+        calls,
+        "test --workspace --target crates/lonely/Board.json\n"
+    );
 }
 
 #[cfg(unix)]

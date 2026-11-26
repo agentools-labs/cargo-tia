@@ -320,7 +320,7 @@ fn with_target_spec(workspace: &Workspace, options: &Options) -> Rules {
         let file = cwd.join(&value);
         if file.is_file() || value.ends_with(".json") {
             let path = workspace::relative(&workspace.root, &workspace::normalize(&file));
-            rules.full_run.push(path);
+            rules.target_specs.push(path);
         }
         // A target name that rustc looks up as `<name>.json` in RUST_TARGET_PATH. Unset, the
         // search path is empty, which rustc reads as its current directory: Cargo's, or the
@@ -335,7 +335,7 @@ fn with_target_spec(workspace: &Workspace, options: &Options) -> Rules {
         for dir in dirs {
             let spec = dir.join(format!("{value}.json"));
             let path = workspace::relative(&workspace.root, &workspace::normalize(&spec));
-            rules.full_run.push(path);
+            rules.target_specs.push(path);
         }
     }
     rules
@@ -351,6 +351,7 @@ fn has_non_ascii_paths(
 ) -> bool {
     let non_ascii = |path: &String| !path.is_ascii();
     rules.full_run.iter().any(non_ascii)
+        || rules.target_specs.iter().any(non_ascii)
         || workspace.full_run.iter().any(non_ascii)
         || workspace
             .packages

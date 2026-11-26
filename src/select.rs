@@ -97,6 +97,9 @@ impl Selection {
 pub struct Rules {
     pub full_run: Vec<String>,
     pub ignore: Vec<String>,
+    /// Target specification files of the test command (`--target board.json`), relative to the
+    /// workspace root. They match in any case, as the built-in files do.
+    pub target_specs: Vec<String>,
 }
 
 /// Decides what one changed file does. `path` is relative to the workspace root.
@@ -107,6 +110,13 @@ pub fn classify(workspace: &Workspace, rules: &Rules, path: &str) -> Effect {
         if glob::matches(&pattern.to_lowercase(), &lower) {
             return Effect::FullRun(format!("matches full-run glob `{pattern}`"));
         }
+    }
+    if rules
+        .target_specs
+        .iter()
+        .any(|spec| spec.to_lowercase() == lower)
+    {
+        return Effect::FullRun("is a target specification of the test command".to_string());
     }
     let full_run = workspace.full_run.iter().chain(&rules.full_run);
     for pattern in full_run {
