@@ -275,8 +275,8 @@ Measured on 2026-11-25 on an Apple Silicon Mac with Rust 1.99.1, with
 [scripts/measure.py](scripts/measure.py) and the default configuration (no ignore globs). Each commit
 `C` is compared with its first parent: `cargo tia list --json --committed --base C^1`.
 
-**Selection** over the last 50 first-parent commits of each workspace. One selection takes 0.1 to
-0.3 seconds.
+**Selection** over the last 50 first-parent commits of each workspace. One selection takes 0.12 to
+0.35 seconds (median 0.13 to 0.16 seconds per workspace).
 
 | Workspace | Packages | Partial | Empty | Full | Mean selected |
 |---|---|---|---|---|---|
