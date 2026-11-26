@@ -261,8 +261,13 @@ fn needs_workspace(
                     && selection.packages.iter().any(|(index, _)| index == package)
             });
             if !library {
+                let needed = if flag == "--lib" {
+                    "a library"
+                } else {
+                    "a library with doctests (lib, rlib or proc-macro)"
+                };
                 return Some(format!(
-                    "`{arg}` after `--` needs a library, and no selected package has one"
+                    "`{arg}` after `--` needs {needed}, and no selected package has one"
                 ));
             }
             continue;

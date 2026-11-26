@@ -80,17 +80,21 @@ and `-Z` values also go to `cargo metadata`, because Cargo can need them to read
 specification file (`--target spec.json`) there counts as a full-run file. For a partial selection
 that is not empty, so do `--features`
 (`-F`, also in a group), `--test`, `--bin`, `--example` or `--bench` with a target name or glob that no
-selected package matches, and `--lib` or `--doc` when no selected package has a library: Cargo checks
-those against the selected packages.
+selected package matches, `--lib` when no selected package has a library, and `--doc` when no
+selected package has a library with doctests (`lib`, `rlib` or `proc-macro`): Cargo checks those
+against the selected packages.
 
 ## How it selects
 
-1. It finds the commit to compare with. A base that you pass with `--base` is compared directly:
+1. It reads the workspace with `cargo metadata --no-deps --offline`. When Cargo cannot read it, the
+   tool stops with Cargo's error and exit code 2: a full-workspace selection also needs a readable
+   workspace.
+2. It finds the commit to compare with. A base that you pass with `--base` is compared directly:
    every difference between it and the working tree counts, also from commits of the base that `HEAD`
    lacks, as after a rollback. Without `--base`, it is the merge base of `origin/HEAD` and `HEAD`, so
    the changes of the default branch since the fork do not count. When `origin/HEAD` is not set, the
    tool does not guess a branch: pass `--base`.
-2. It lists the files that differ from that commit. The list includes staged, unstaged and
+3. It lists the files that differ from that commit. The list includes staged, unstaged and
    untracked files. For files marked assume-unchanged or skip-worktree, the file in the working tree
    decides, not the index. Without a sparse checkout, a missing skip-worktree file counts as deleted. Git configuration
    such as `diff.ignoreSubmodules`, `core.fsmonitor`, `core.fileMode`, `core.ignoreCase`,
@@ -98,7 +102,6 @@ those against the selected packages.
    exports, such as `GIT_DIR` and `GIT_INDEX_FILE`, are cleared: the tool finds the repository from
    the workspace. With `--committed`, the list includes only
    committed changes, and the working tree must match `HEAD`.
-3. It reads the workspace with `cargo metadata --no-deps --offline`.
 4. It gives each changed file one effect, in this order:
    - **Full run**: the file matches a built-in or configured full-run glob, or it is a build script.
    - **Ignored**: the file matches an ignore glob.
@@ -193,7 +196,9 @@ ignore = ["docs/**", "*.md"]       # these files select nothing
 `--full-run GLOB` and `--ignore GLOB` add globs on the command line. Glob rules:
 
 - A glob matches the whole path, relative to the workspace root.
-- `*` and `?` match inside one path segment. `**` matches any number of segments.
+- `*` and `?` match inside one path segment. `**` as a whole segment matches any number of
+  segments: `**/*.proto` matches `.proto` files at any depth, but `**.proto` only in the workspace
+  root.
 - A trailing `/` matches everything below a directory: `docs/` is `docs/**`.
 - A leading `./` is dropped: `./docs/**` is `docs/**`.
 - Files outside the workspace root have `../` paths, for example `../web/**`.

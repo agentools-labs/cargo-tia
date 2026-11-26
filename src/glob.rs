@@ -84,6 +84,14 @@ mod tests {
     }
 
     #[test]
+    fn double_star_spans_directories_only_as_a_whole_segment() {
+        assert!(matches("**/*.proto", "crates/api/schema.proto"));
+        assert!(matches("**/*.proto", "schema.proto"));
+        assert!(matches("**.proto", "schema.proto"));
+        assert!(!matches("**.proto", "crates/api/schema.proto"));
+    }
+
+    #[test]
     fn star_stays_inside_one_segment() {
         assert!(matches("*.md", "README.md"));
         assert!(!matches("*.md", "docs/README.md"));
