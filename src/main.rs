@@ -27,7 +27,7 @@ Usage:
   cargo tia nextest [options] [-- ARGS]   run `cargo nextest run` on the selection
 
 Options:
-  --base REV             compare with the merge base of REV and HEAD
+  --base REV             compare with REV directly
                          [default: origin/HEAD, the default branch of origin]
   --committed            compare committed changes only; the working tree must match HEAD
   --manifest-path PATH   path to the workspace Cargo.toml
@@ -341,13 +341,20 @@ fn with_target_spec(workspace: &Workspace, options: &Options) -> Rules {
 }
 
 /// True when a path that the tool compares with changed files has a non-ASCII name: a package
-/// or path dependency directory, a target, a build script, a configuration file or a link.
-fn has_non_ascii_paths(workspace: &Workspace, symlinks: &[(String, String)]) -> bool {
+/// or path dependency directory, a target, a build script, a configuration file, a link or a
+/// full-run glob. (An ignore glob that fails to match only selects more.)
+fn has_non_ascii_paths(
+    workspace: &Workspace,
+    rules: &Rules,
+    symlinks: &[(String, String)],
+) -> bool {
     let non_ascii = |path: &String| !path.is_ascii();
-    workspace
-        .packages
-        .iter()
-        .any(|package| non_ascii(&package.dir))
+    rules.full_run.iter().any(non_ascii)
+        || workspace.full_run.iter().any(non_ascii)
+        || workspace
+            .packages
+            .iter()
+            .any(|package| non_ascii(&package.dir))
         || workspace.foreign.iter().any(|(dir, _)| non_ascii(dir))
         || workspace.targets.iter().any(|(src, _)| non_ascii(src))
         || workspace
@@ -460,6 +467,20 @@ fn main() -> ExitCode {
         }
     };
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
+    let subcommand: &[&str] = if options.mode == Mode::Nextest {
+        &["nextest", "run"]
+    } else {
+        &["test"]
+    };
+    // A request for the test command's help needs no workspace and no selection.
+    let help = options
+        .passthrough
+        .iter()
+        .take_while(|arg| *arg != "--")
+        .any(|arg| arg == "--help" || short_flag(&arg.to_string_lossy(), &['h']));
+    if help {
+        return run(&cargo, subcommand, &[], &options.passthrough);
+    }
     let workspace = match workspace::load(
         &cargo,
         options.manifest_path.as_deref(),
@@ -474,9 +495,10 @@ fn main() -> ExitCode {
     let (base, selection) =
         match git::changed_files(&workspace.root, options.base.as_deref(), options.committed) {
             Ok(changes) => {
+                let rules = with_target_spec(&workspace, &options);
                 let mut selection = select::select(
                     &workspace,
-                    &with_target_spec(&workspace, &options),
+                    &rules,
                     &changes.files,
                     &changes.symlinks,
                     &changes.special,
@@ -523,7 +545,7 @@ fn main() -> ExitCode {
                 // (composed and decomposed, as HFS+ stores names): a byte comparison could
                 // then miss an owner or a link.
                 if let Some(path) = changes.files.iter().find(|path| !path.is_ascii()) {
-                    if has_non_ascii_paths(&workspace, &changes.symlinks) {
+                    if has_non_ascii_paths(&workspace, &rules, &changes.symlinks) {
                         let reason = format!(
                             "`{path}` and paths of the workspace have non-ASCII names, which \
                              can differ in Unicode form"
@@ -552,7 +574,7 @@ fn main() -> ExitCode {
                 if let Some(reason) = needs_workspace(&workspace, &selection, &options) {
                     selection.make_full(&workspace, reason);
                 }
-                (Base::Known(changes.base, changes.merge_base), selection)
+                (Base::Known(changes.base, changes.compared), selection)
             }
             Err(unknown) => {
                 let selection = Selection::full(&workspace, unknown.reason);
@@ -574,21 +596,10 @@ fn main() -> ExitCode {
             // The report is information: a closed stderr must not stop the run.
             let report = report(&workspace, &base, &selection);
             say(report.strip_suffix('\n').unwrap_or(&report));
-            // A request for the test command's help runs it whatever the selection.
-            let help = options
-                .passthrough
-                .iter()
-                .take_while(|arg| *arg != "--")
-                .any(|arg| arg == "--help" || short_flag(&arg.to_string_lossy(), &['h']));
-            if selection.packages.is_empty() && !help {
+            if selection.packages.is_empty() {
                 say("no package is affected; nothing to run");
                 return ExitCode::SUCCESS;
             }
-            let subcommand: &[&str] = if options.mode == Mode::Test {
-                &["test"]
-            } else {
-                &["nextest", "run"]
-            };
             let mut arguments = cargo_args(&workspace, &selection, &options);
             // Nextest fails when a run has no tests. A partial selection can hold no tests while
             // the workspace has them, so accept that unless the caller chose a policy. With
@@ -662,7 +673,7 @@ fn failure_code(status: std::process::ExitStatus) -> u8 {
 }
 
 enum Base {
-    /// The base as given or detected, and its merge base with HEAD.
+    /// The base as given or detected, and the commit that the files are compared with.
     Known(String, String),
     /// The base, when one was given or detected, that git could not use.
     Unknown(Option<String>),
@@ -698,9 +709,9 @@ fn cargo_args(workspace: &Workspace, selection: &Selection, options: &Options) -
 fn report(workspace: &Workspace, base: &Base, selection: &Selection) -> String {
     let mut out = String::new();
     match base {
-        Base::Known(base, merge_base) => {
-            let short = &merge_base[..merge_base.len().min(12)];
-            out += &format!("base: {base} (merge base {short})\n");
+        Base::Known(base, compared) => {
+            let short = &compared[..compared.len().min(12)];
+            out += &format!("base: {base} (commit {short})\n");
         }
         Base::Unknown(Some(base)) => out += &format!("base: {base} (unusable)\n"),
         Base::Unknown(None) => out += "base: unknown\n",
@@ -776,10 +787,8 @@ fn report(workspace: &Workspace, base: &Base, selection: &Selection) -> String {
 
 fn to_json(workspace: &Workspace, base: &Base, selection: &Selection, options: &Options) -> Value {
     let name = |index: usize| workspace.packages[index].name.clone();
-    let (base, merge_base) = match base {
-        Base::Known(base, merge_base) => {
-            (Value::from(base.clone()), Value::from(merge_base.clone()))
-        }
+    let (base, compared) = match base {
+        Base::Known(base, compared) => (Value::from(base.clone()), Value::from(compared.clone())),
         Base::Unknown(base) => (base.clone().map_or(Value::Null, Value::from), Value::Null),
     };
     let files: Vec<Value> = selection
@@ -821,7 +830,7 @@ fn to_json(workspace: &Workspace, base: &Base, selection: &Selection, options: &
         .collect();
     json!({
         "base": base,
-        "merge_base": merge_base,
+        "compared": compared,
         "full": selection.is_full(),
         "full_reasons": selection.full_reasons,
         "changed_files": files,

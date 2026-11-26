@@ -470,7 +470,7 @@ fn unusable_base_or_repository_selects_the_whole_workspace() {
     let json = repo.select("no-such-branch", &[]);
     assert!(is_full(&json));
     assert_eq!(json["base"], "no-such-branch");
-    assert!(json["merge_base"].is_null());
+    assert!(json["compared"].is_null());
 
     // No origin: the default base cannot be found.
     let output = repo.tia(&["list", "--json"]);
@@ -803,6 +803,18 @@ fn missing_origin_head_selects_the_whole_workspace() {
 }
 
 #[test]
+fn an_explicit_base_is_compared_directly() {
+    let repo = chain();
+    repo.append("crates/lonely/src/lib.rs", "pub fn g() {}\n");
+    let ahead = repo.commit("lonely work");
+    // Roll back: HEAD is the parent of the base, which a merge base would hide.
+    repo.git(&["reset", "-q", "--hard", "HEAD^"]);
+    let json = repo.select(&ahead, &[]);
+    assert_eq!(selected(&json), ["lonely"], "{json:#}");
+    assert_eq!(json["compared"], ahead.as_str());
+}
+
+#[test]
 fn several_merge_bases_select_the_whole_workspace() {
     let repo = chain();
     repo.git(&["checkout", "-q", "-b", "side"]);
@@ -815,7 +827,15 @@ fn several_merge_bases_select_the_whole_workspace() {
     repo.git(&["merge", "-q", "--no-ff", "--no-edit", &side]);
     repo.git(&["checkout", "-q", "side"]);
     repo.git(&["merge", "-q", "--no-ff", "--no-edit", &main]);
-    let json = repo.select("main", &[]);
+    // The default base is compared through its merge base with HEAD.
+    repo.git(&["update-ref", "refs/remotes/origin/main", "main"]);
+    repo.git(&[
+        "symbolic-ref",
+        "refs/remotes/origin/HEAD",
+        "refs/remotes/origin/main",
+    ]);
+    let output = repo.tia(&["tia", "list", "--json"]);
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert!(is_full(&json), "{json:#}");
     assert!(json["full_reasons"][0]
         .as_str()
@@ -841,9 +861,9 @@ fn committed_only_needs_committed_manifests() {
     repo.write("notes.txt", "notes\n");
     let json = repo.select("HEAD~1", &["--committed"]);
     assert!(is_full(&json));
-    // The report keeps the committed change and the merge base.
+    // The report keeps the committed change and the compared commit.
     assert_eq!(json["changed_files"][0]["path"], "crates/core/src/lib.rs");
-    assert!(json["merge_base"].is_string());
+    assert!(json["compared"].is_string());
     fs::remove_file(repo.path("notes.txt")).unwrap();
     let json = repo.select("HEAD~1", &["--committed"]);
     assert_eq!(selected(&json), ["app", "builder", "core", "mid", "tester"]);
@@ -1933,6 +1953,21 @@ fn a_new_file_that_differs_in_case_from_a_tracked_one() {
 }
 
 #[test]
+fn a_non_ascii_full_run_glob_with_a_non_ascii_change_selects_the_whole_workspace() {
+    let repo = chain();
+    repo.write("crates/app/data/caf\u{e9}.json", "{}\n");
+    repo.commit("data");
+    repo.append("crates/app/data/caf\u{e9}.json", "\n");
+    // The glob spells the name decomposed; git reports it composed.
+    let json = repo.select("HEAD", &["--full-run", "crates/app/data/cafe\u{301}.json"]);
+    assert!(is_full(&json), "{json:#}");
+    assert!(
+        json["full_reasons"].to_string().contains("Unicode"),
+        "{json:#}"
+    );
+}
+
+#[test]
 fn non_ascii_names_on_both_sides_select_the_whole_workspace() {
     let repo = chain();
     repo.write(
@@ -2776,8 +2811,10 @@ fn shallow_clones_trust_only_an_endpoint_merge_base() {
         clone.git(&["rev-parse", "--is-shallow-repository"]).trim(),
         "true"
     );
-    // The merge base with origin/main is neither commit: the cut history could hide another.
-    let json = clone.select("origin/main", &[]);
+    // The merge base with the default base, origin/main, is neither commit: the cut history
+    // could hide another.
+    let output = clone.tia(&["tia", "list", "--json"]);
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert!(is_full(&json), "{json:#}");
     assert!(json["full_reasons"][0]
         .as_str()
@@ -3387,6 +3424,22 @@ fn nextest_scripts_make_any_change_select_the_whole_workspace() {
             .contains("scripts"));
         repo.git(&["checkout", "-q", "--", "."]);
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn help_for_the_test_command_needs_no_workspace() {
+    let repo = Repo::new("no-workspace");
+    let cargo = fake_cargo(&repo);
+    let output = isolated(Command::new(BIN))
+        .current_dir(&repo.dir)
+        .env("CARGO", &cargo)
+        .args(["tia", "nextest", "--", "--help"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    let calls = fs::read_to_string(repo.path("cargo-calls.log")).unwrap();
+    assert_eq!(calls, "nextest run --help\n");
 }
 
 #[cfg(unix)]

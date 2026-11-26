@@ -53,8 +53,9 @@ fn local_env_vars() -> &'static [String] {
 pub struct Changes {
     /// The base revision as given or detected, for example `origin/main`.
     pub base: String,
-    /// The merge base of `base` and `HEAD`.
-    pub merge_base: String,
+    /// The commit that the files are compared with: an explicit base itself, or the merge base
+    /// of the default base and `HEAD`.
+    pub compared: String,
     /// Changed, added, deleted and (unless committed-only) untracked files.
     pub files: Vec<String>,
     /// Changed files that are or were a symbolic link or a submodule.
@@ -76,9 +77,11 @@ pub struct Unknown {
     pub reason: String,
 }
 
-/// Lists the files that changed since the merge base of `base` and `HEAD`.
+/// Lists the files that differ from `base`, compared directly: every difference between the two
+/// trees counts, also from commits of `base` that `HEAD` lacks, as after a rollback.
 ///
-/// Without `base`, the base is `origin/HEAD`, the default branch of `origin`. Unless
+/// Without `base`, the files that changed since the merge base of `origin/HEAD`, the default
+/// branch of `origin`, and `HEAD`. Unless
 /// `committed_only` is set, the list includes staged, unstaged and untracked (not ignored)
 /// files, and files marked assume-unchanged.
 pub fn changed_files(
@@ -93,6 +96,7 @@ pub fn changed_files(
     let toplevel = git(workspace_root, &["rev-parse", "--show-toplevel"])
         .map_err(|error| fail(base, format!("not in a git work tree: {error}")))?;
     let toplevel = normalize(Path::new(toplevel.trim_end_matches(['\n', '\r'])));
+    let explicit = base.is_some();
     let base = match base {
         Some(base) => base.to_string(),
         None => default_base(&toplevel).ok_or_else(|| {
@@ -104,48 +108,25 @@ pub fn changed_files(
         })?,
     };
     let fail = |reason: String| fail(Some(&base), reason);
-    let merge_bases = git(&toplevel, &["merge-base", "--all", &base, "HEAD"]).map_err(|error| {
-        fail(format!(
-            "cannot find the merge base of `{base}` and HEAD (shallow clone?): {error}"
-        ))
-    })?;
-    let merge_bases: Vec<&str> = merge_bases.split_whitespace().collect();
-    let merge_base = match merge_bases.as_slice() {
-        [one] => one.to_string(),
-        _ => {
-            return Err(fail(format!(
-                "`{base}` and HEAD have {} merge bases",
-                merge_bases.len()
-            )))
-        }
+    let merge_base = if explicit {
+        // An explicit base is compared directly. A merge base would hide the commits of the base
+        // that HEAD lacks: after a rollback, HEAD itself.
+        let resolved = git(
+            &toplevel,
+            // Without --quiet: a warning, such as for an ambiguous name or a reflog date
+            // older than the log, makes the base unknown.
+            &[
+                "rev-parse",
+                "--verify",
+                "--end-of-options",
+                &format!("{base}^{{commit}}"),
+            ],
+        )
+        .map_err(|error| fail(format!("cannot resolve `{base}` to a commit: {error}")))?;
+        resolved.trim().to_string()
+    } else {
+        merge_base_with(&toplevel, &base).map_err(fail)?
     };
-    // In a shallow clone, the cut history can hide the true merge base. Trust only a merge
-    // base that is one of the two commits, as for a pull request merge commit and HEAD^1.
-    let shallow = git(&toplevel, &["rev-parse", "--is-shallow-repository"])
-        .is_ok_and(|value| value.trim() == "true");
-    if shallow {
-        let commit = |revision: &str| {
-            git(
-                &toplevel,
-                &[
-                    "rev-parse",
-                    "--verify",
-                    "-q",
-                    &format!("{revision}^{{commit}}"),
-                ],
-            )
-            .map(|sha| sha.trim().to_string())
-        };
-        let ends = [commit(&base), commit("HEAD")];
-        if !ends
-            .iter()
-            .any(|end| end.as_deref() == Ok(merge_base.as_str()))
-        {
-            return Err(fail(format!(
-                "the clone is shallow and the merge base of `{base}` and HEAD is neither of them"
-            )));
-        }
-    }
 
     let list = |args: &[&str]| -> Result<Vec<String>, Unknown> {
         let output = git(&toplevel, args)
@@ -396,13 +377,58 @@ pub fn changed_files(
 
     Ok(Changes {
         base,
-        merge_base,
+        compared: merge_base,
         files,
         special,
         symlinks,
         repository: relative(&root, &toplevel),
         uncertain,
     })
+}
+
+/// The single merge base of `base` and `HEAD`. In a shallow clone, only a merge base that is one
+/// of the two commits: the cut history can hide the true one.
+fn merge_base_with(toplevel: &Path, base: &str) -> Result<String, String> {
+    let merge_bases = git(toplevel, &["merge-base", "--all", base, "HEAD"]).map_err(|error| {
+        format!("cannot find the merge base of `{base}` and HEAD (shallow clone?): {error}")
+    })?;
+    let merge_bases: Vec<&str> = merge_bases.split_whitespace().collect();
+    let merge_base = match merge_bases.as_slice() {
+        [one] => one.to_string(),
+        _ => {
+            return Err(format!(
+                "`{base}` and HEAD have {} merge bases",
+                merge_bases.len()
+            ))
+        }
+    };
+    // As for a pull request merge commit and HEAD^1.
+    let shallow = git(toplevel, &["rev-parse", "--is-shallow-repository"])
+        .is_ok_and(|value| value.trim() == "true");
+    if shallow {
+        let commit = |revision: &str| {
+            git(
+                toplevel,
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "-q",
+                    &format!("{revision}^{{commit}}"),
+                ],
+            )
+            .map(|sha| sha.trim().to_string())
+        };
+        let ends = [commit(base), commit("HEAD")];
+        if !ends
+            .iter()
+            .any(|end| end.as_deref() == Ok(merge_base.as_str()))
+        {
+            return Err(format!(
+                "the clone is shallow and the merge base of `{base}` and HEAD is neither of them"
+            ));
+        }
+    }
+    Ok(merge_base)
 }
 
 /// True when two paths name one directory entry, as two spellings do on a case-insensitive
@@ -558,10 +584,11 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
         .map_err(|error| format!("cannot run git: {error}"))?;
     // Git skips a directory that it cannot read with only a warning. The untracked files are
     // then unknown.
-    // A merge base with a warning (an old reflog date, say) is not the asked one.
+    // A merge base or a revision with a warning (an old reflog date, say) is not the asked one.
     let scans = args.contains(&"--others")
         || args.first() == Some(&"status")
-        || args.first() == Some(&"merge-base");
+        || args.first() == Some(&"merge-base")
+        || args.first() == Some(&"rev-parse") && args.contains(&"--verify");
     // An ambiguous name (a branch and a tag) only warns: the revision is then unknown.
     let ambiguous = String::from_utf8_lossy(&output.stderr).contains("ambiguous");
     if output.status.success() && (scans && !output.stderr.is_empty() || ambiguous) {

@@ -32,7 +32,7 @@ Example, on a commit of [ripgrep](https://github.com/BurntSushi/ripgrep/commit/3
 
 ```text
 $ cargo tia --committed --base 3e85c6c^1
-base: 3e85c6c^1 (merge base 4a51093f78bf)
+base: 3e85c6c^1 (commit 4a51093f78bf)
 changed files: 2
   crates/printer/src/standard.rs  grep-printer
   tests/feature.rs                ripgrep
@@ -46,7 +46,7 @@ A commit that changes a file outside every package selects the full workspace:
 
 ```text
 $ cargo tia --committed --base 0856f39^1
-base: 0856f39^1 (merge base 9c49a2589445)
+base: 0856f39^1 (commit 9c49a2589445)
 changed files: 1
   .github/workflows/release.yml  full run: outside every package
 selected: full workspace, 10 packages
@@ -85,9 +85,12 @@ those against the selected packages.
 
 ## How it selects
 
-1. It finds the merge base of the base revision and `HEAD`. The default base is `origin/HEAD`. When
-   `origin/HEAD` is not set, the tool does not guess a branch: pass `--base`.
-2. It lists the files that changed since the merge base. The list includes staged, unstaged and
+1. It finds the commit to compare with. A base that you pass with `--base` is compared directly:
+   every difference between it and the working tree counts, also from commits of the base that `HEAD`
+   lacks, as after a rollback. Without `--base`, it is the merge base of `origin/HEAD` and `HEAD`, so
+   the changes of the default branch since the fork do not count. When `origin/HEAD` is not set, the
+   tool does not guess a branch: pass `--base`.
+2. It lists the files that differ from that commit. The list includes staged, unstaged and
    untracked files. For files marked assume-unchanged or skip-worktree, the file in the working tree
    decides, not the index. Without a sparse checkout, a missing skip-worktree file counts as deleted. Git configuration
    such as `diff.ignoreSubmodules`, `core.fsmonitor`, `core.fileMode`, `core.ignoreCase`,
@@ -158,10 +161,10 @@ because a case-insensitive file system reads them so.
   the workspace root owns only the top-level entries that hold its targets, such as `src/` and
   `tests/`.
 - A file that matches a configured `full-run` glob.
-- Any case where git cannot give a single change set: a directory that git cannot read, no merge base
-  (for example in a shallow clone), more than one merge base (criss-cross merges), in a shallow clone a
-  merge base that is neither of the two commits, an unknown base, no `origin/HEAD` and no `--base`, or
-  no repository.
+- Any case where git cannot give a single change set: a directory that git cannot read, a base that
+  is not a commit in the clone, no `origin/HEAD` and no `--base`, or no repository. For the default
+  base also: no merge base (for example in a shallow clone), more than one merge base (criss-cross
+  merges), or in a shallow clone a merge base that is neither of the two commits.
 - A path dependency, local patch, `paths` override, target, build script, file that a non-member
   manifest names, symbolic link target, or file that a configuration file in the repository includes,
   outside the git repository, also through a path dependency
@@ -216,7 +219,9 @@ jobs:
 
 For a pull request, `actions/checkout` checks out a merge commit. Its first parent, `HEAD^1`, is the
 target branch at that time, so the selection covers exactly the changes of the pull request, also when
-the workflow runs again later. `origin/HEAD` is not set in this checkout, so pass `--base`.
+the workflow runs again later. `origin/HEAD` is not set in this checkout, so pass `--base`. For a push,
+`--base ${{ github.event.before }}` compares with the previous tip, also after a force push that rolls
+back; fetch with `fetch-depth: 0`, and a tip that the clone does not have selects the full workspace.
 
 This repository uses the tool on itself in [its CI workflow](.github/workflows/ci.yml).
 
